@@ -152,14 +152,15 @@
 
   // Integra kW → kWh (sin inventar energía en los cortes de señal: máximo 10 min por punto)
   function integrate(pts) {
-    let gen = 0, load = 0, imp = 0, exp = 0;
+    let gen = 0, load = 0, imp = 0, exp = 0, chg = 0, dis = 0;
     for (let i = 0; i < pts.length; i++) {
       const next = i + 1 < pts.length ? pts[i + 1].t : pts[i].t + 5 / 60;
       const dt = Math.min(Math.max(0, next - pts[i].t), 10 / 60);
       gen += pts[i].pv * dt; load += pts[i].load * dt;
       if (pts[i].grid > 0) imp += pts[i].grid * dt; else exp += -pts[i].grid * dt;
+      if ((pts[i].batt || 0) > 0) chg += pts[i].batt * dt; else dis += -(pts[i].batt || 0) * dt;
     }
-    return { gen, load, imp, exp, self: Math.max(0, load - imp) };
+    return { gen, load, imp, exp, chg, dis, self: Math.max(0, load - imp) };
   }
 
   async function fetchDayPoints(date) {
@@ -177,6 +178,9 @@
 
   // Quita lecturas sueltas imposibles (ej.: un punto de 5,8 kW entre dos de 0,1 kW)
   function despike(pts) {
+    for (let i = 1; i < pts.length - 1; i++) {   // batería en 0 % por un instante = lectura fallida
+      if (pts[i].soc < 5 && pts[i - 1].soc > 20 && pts[i + 1].soc > 20) pts[i].soc = (pts[i - 1].soc + pts[i + 1].soc) / 2;
+    }
     for (const k of ['pv', 'load']) {
       for (let i = 1; i < pts.length - 1; i++) {
         const n = Math.max(pts[i - 1][k], pts[i + 1][k]);
@@ -198,7 +202,7 @@
     else {
       const k = ymd(date);
       if (!dayCache[k]) { dayCache[k] = await fetchDayPoints(date); saveCache(); }
-      pts = dayCache[k];
+      pts = despike(dayCache[k]);
     }
     if (cutHour != null) pts = pts.filter(p => p.t <= cutHour);
     const totals = integrate(pts);
@@ -220,7 +224,7 @@
     });
   }
 
-  const sumTotals = (list) => list.reduce((a, b) => ({ gen: a.gen + b.gen, load: a.load + b.load, imp: a.imp + b.imp, exp: a.exp + b.exp, self: a.self + b.self }), { gen: 0, load: 0, imp: 0, exp: 0, self: 0 });
+  const sumTotals = (list) => list.reduce((a, b) => ({ gen: a.gen + b.gen, load: a.load + b.load, imp: a.imp + b.imp, exp: a.exp + b.exp, chg: a.chg + (b.chg || 0), dis: a.dis + (b.dis || 0), self: a.self + b.self }), { gen: 0, load: 0, imp: 0, exp: 0, chg: 0, dis: 0, self: 0 });
 
   async function month(y, m, upTo) {
     const now = new Date();
@@ -230,7 +234,7 @@
     for (let i = 1; i <= days; i++) {
       const d = new Date(y, m, i);
       if (d > now || (upTo && i > upTo.day)) { items.push(null); continue; }
-      if (beforeInstall(d)) { items.push({ label: String(i), date: d, gen: 0, load: 0, imp: 0, exp: 0, self: 0 }); continue; }
+      if (beforeInstall(d)) { items.push({ label: String(i), date: d, gen: 0, load: 0, imp: 0, exp: 0, chg: 0, dis: 0, self: 0 }); continue; }
       const cut = upTo && i === upTo.day ? upTo.hour : null;
       const t = (await day(d, cut)).totals;
       const g = gens[ymd(d)];
@@ -244,7 +248,7 @@
     const now = new Date();
     const items = [];
     for (let m = 0; m < 12; m++) {
-      if (new Date(y, m, 1) > now || (upTo && m > upTo.month) || new Date(y, m + 1, 0) < installed()) { items.push(new Date(y, m, 1) > now || (upTo && m > upTo.month) ? null : { label: '', month: m, gen: 0, load: 0, imp: 0, exp: 0, self: 0 }); continue; }
+      if (new Date(y, m, 1) > now || (upTo && m > upTo.month) || new Date(y, m + 1, 0) < installed()) { items.push(new Date(y, m, 1) > now || (upTo && m > upTo.month) ? null : { label: '', month: m, gen: 0, load: 0, imp: 0, exp: 0, chg: 0, dis: 0, self: 0 }); continue; }
       const mm = await month(y, m, upTo && m === upTo.month ? upTo : null);
       items.push({ label: '', month: m, ...mm.totals });
     }

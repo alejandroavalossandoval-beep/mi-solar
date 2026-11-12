@@ -161,10 +161,14 @@
     let lo = Math.min(...all), hi = Math.max(...all);
     if (opts.zero !== false && lo >= 0 && lo < hi * 0.5) lo = 0;          // potencias: desde 0
     if (hi - lo < 1e-6) { hi += 1; lo = Math.max(0, lo - 1); }
-    const span = niceMax((hi - lo) * 1.1);
-    const step = span / 4;
-    lo = Math.floor(lo / step) * step; hi = lo + span;
-    if (hi < Math.max(...all)) hi += step;
+    let step;
+    if (opts.min != null && opts.max != null) { lo = opts.min; hi = opts.max; step = (hi - lo) / 4; }
+    else {
+      const span = niceMax((hi - lo) * 1.1);
+      step = span / 4;
+      lo = Math.floor(lo / step) * step; hi = lo + span;
+      if (hi < Math.max(...all)) hi += step;
+    }
     const X = (h) => pad.l + ((W - pad.l - pad.r) * h) / 24;
     const Y = (v) => H - pad.b - ((H - pad.t - pad.b) * (v - lo)) / (hi - lo);
     const N = Math.round((hi - lo) / step);

@@ -231,3 +231,55 @@ body {
 .det summary .right::after { content: " ›"; display: inline-block; transition: transform .2s; }
 .det[open] summary .right::after { transform: rotate(90deg); }
 .title.small { font-size: 14px; }
+
+/* Mis paneles */
+.pv-top { margin-bottom: 10px; }
+.pv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 15px; }
+.pv-row input { font: inherit; font-size: 16px; width: 80px; text-align: right; color: var(--text); background: var(--card-2); border: 0; border-radius: 8px; padding: 6px 8px; outline: none; }
+.pv-hint { font-size: 12px; color: var(--text-3); margin-top: -4px; }
+.pv-input { border-top: 1px solid var(--sep); margin-top: 12px; padding-top: 12px; }
+.pv-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 15px; }
+.pv-head span { font-size: 13px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.pv-grid div { background: var(--card-2); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; min-width: 0; }
+.pv-grid span { font-size: 12px; color: var(--text-3); }
+.pv-grid b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.pv-grid small { font-size: 12px; color: var(--text-2); font-weight: 500; }
+.verdict { margin-top: 14px; border-radius: 12px; padding: 12px; font-size: 14px; display: grid; gap: 6px; background: var(--card-2); border-left: 4px solid var(--good); }
+.verdict.warn { border-left-color: var(--warn); }
+.verdict.bad { border-left-color: var(--bad); }
+
+/* Metas, batería y balance */
+.goal-top, .batt-top { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; }
+.ring { width: 118px; height: 118px; flex: none; }
+.ring-big { font-size: 24px; font-weight: 800; fill: var(--text); font-variant-numeric: tabular-nums; }
+.ring-sub { font-size: 11px; fill: var(--text-3); }
+.goal-info, .batt-info { min-width: 0; display: grid; gap: 4px; }
+.chip { justify-self: start; color: #fff; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 99px; }
+.goal-big { font-size: 30px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.goal-big small { font-size: 15px; font-weight: 600; color: var(--text-2); letter-spacing: 0; }
+.goal-sub { font-size: 13px; color: var(--text-2); }
+.goal-proj { margin-top: 12px; font-size: 14px; background: var(--card-2); border-radius: 10px; padding: 10px 12px; }
+.meter { margin-top: 12px; }
+.meter-top { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.meter-top span { color: var(--text-2); }
+.meter-top b { font-variant-numeric: tabular-nums; text-align: right; }
+.meter-track { position: relative; height: 12px; background: var(--card-2); border-radius: 99px; margin-top: 6px; overflow: visible; }
+.meter-fill { height: 100%; border-radius: 99px; transition: width .6s ease; }
+.meter-track .mark { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1.5px; background: var(--text); border-radius: 2px; opacity: .75; }
+.meter-foot { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.cta { display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+.cta .desc { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+.cta .btn { flex: none; }
+.batt-icon { flex: none; display: flex; flex-direction: column; align-items: center; width: 64px; }
+.batt-cap { order: -1; width: 22px; height: 7px; background: var(--text-3); border-radius: 3px 3px 0 0; }
+.batt-body { width: 56px; height: 96px; border: 3px solid var(--text-3); border-radius: 10px; padding: 4px; display: flex; align-items: flex-end; }
+.batt-level { width: 100%; border-radius: 5px; transition: height .6s ease; }
+.stack-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.stack-bar { display: flex; height: 22px; border-radius: 8px; overflow: hidden; gap: 2px; background: var(--card); }
+.seg-fill { min-width: 3px; }
+.hatch { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 4px, transparent 4px 8px) !important; }
+.stack-legs { display: grid; gap: 6px; margin-top: 10px; }
+.stack-leg { display: grid; grid-template-columns: 12px 1fr auto auto; gap: 8px; align-items: center; font-size: 14px; }
+.stack-leg b { font-variant-numeric: tabular-nums; }
+.stack-leg small { color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 72px; text-align: right; }

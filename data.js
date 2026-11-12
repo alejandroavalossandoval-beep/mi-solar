@@ -70,12 +70,13 @@
 
   function totalsOf(d, n) {
     const dt = STEP_MIN / 60;
-    let gen = 0, load = 0, imp = 0, exp = 0;
+    let gen = 0, load = 0, imp = 0, exp = 0, chg = 0, dis = 0;
     for (let i = 0; i < n; i++) {
       gen += d.pv[i] * dt; load += d.load[i] * dt;
       if (d.grid[i] > 0) imp += d.grid[i] * dt; else exp += -d.grid[i] * dt;
+      if (d.batt[i] > 0) chg += d.batt[i] * dt; else dis += -d.batt[i] * dt;
     }
-    return { gen, load, imp, exp, self: Math.max(0, load - imp) };
+    return { gen, load, imp, exp, chg, dis, self: Math.max(0, load - imp) };
   }
 
   const isToday = (d) => dayKey(d) === dayKey(new Date());
@@ -91,7 +92,7 @@
   }
 
   function sumTotals(list) {
-    return list.reduce((a, b) => ({ gen: a.gen + b.gen, load: a.load + b.load, imp: a.imp + b.imp, exp: a.exp + b.exp, self: a.self + b.self }), { gen: 0, load: 0, imp: 0, exp: 0, self: 0 });
+    return list.reduce((a, b) => ({ gen: a.gen + b.gen, load: a.load + b.load, imp: a.imp + b.imp, exp: a.exp + b.exp, chg: a.chg + b.chg, dis: a.dis + b.dis, self: a.self + b.self }), { gen: 0, load: 0, imp: 0, exp: 0, chg: 0, dis: 0, self: 0 });
   }
 
   // Mes: un total por día

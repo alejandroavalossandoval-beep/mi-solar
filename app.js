@@ -13,7 +13,7 @@
   const MESES = Demo.MESES;
 
   // ---------- Ajustes (guardados en el celular) ----------
-  const DEFAULTS = { tarifa: 210, inyeccion: 110, co2: 0.3, battLow: 25, aBattLow: true, aOffline: true, aLowProd: true, aFull: false };
+  const DEFAULTS = { tarifa: 210, inyeccion: 110, co2: 0.3, battLow: 25, aBattLow: true, aOffline: true, aLowProd: true, aFull: false, p1: null, p2: null, wp: null, battKwh: null };
   let S = { ...DEFAULTS };
   try { Object.assign(S, JSON.parse(localStorage.getItem('miSolar.ajustes') || '{}')); } catch (e) { /* sin almacenamiento */ }
   const save = () => { try { localStorage.setItem('miSolar.ajustes', JSON.stringify(S)); } catch (e) { /* nada */ } };
@@ -161,6 +161,7 @@
         <div class="tile"><div class="lbl">Del sol</div>
           <div class="val">${auto}<small>%</small></div><div class="foot">de lo que usaste hoy</div></div>
       </div>
+      <div id="goals"></div>
       <div class="section-title">Hoy</div>
       <div class="card"><div id="chart-hoy"></div>
         <div class="legend"><span><i class="swatch" style="background:${col.solar}"></i>Generación</span><span><i class="swatch" style="background:${col.home}"></i>Consumo</span></div>
@@ -173,8 +174,161 @@
       ${inverterRows(L.raw)}
       ${!isCloud() ? '<p class="note">Estos son datos de ejemplo. Conecta tu cuenta de Solar of Things en la pestaña Avisos.</p>' : ''}`;
     C.dayChart($('#chart-hoy'), today, col);
+    renderGoals(alive, L, today).catch(e => { const g = $('#goals'); if (g) g.innerHTML = `<div class="card empty">No pude calcular las metas: ${esc(e.message || e)}</div>`; });
     $('#ask-claude').addEventListener('click', () => askClaude(false));
     $('#ask-share').addEventListener('click', () => askClaude(true));
+  }
+
+  // ---------- METAS, BATERÍA Y BALANCE (pantalla Ahora) ----------
+  // Sol promedio en Santiago (kWh/m² al día, por mes) × rendimiento real de un sistema (0,78) = kWh por kWp esperados
+  const SOL_SANTIAGO = [8.2, 7.3, 6.0, 4.3, 3.0, 2.4, 2.7, 3.6, 4.9, 6.3, 7.4, 8.0];
+  const dailyGoalPerKwp = (d) => SOL_SANTIAGO[d.getMonth()] * 0.78;
+  // Fracción del sol del día que ya pasó a cierta hora (curva del sol en Santiago)
+  function solarFraction(d, hour) {
+    const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5);
+    const season = Math.cos((2 * Math.PI * (doy - 5)) / 365);
+    const len = 12 + 2.3 * season, noon = 13.2 + 0.45 * season, rise = noon - len / 2;
+    let done = 0, all = 0;
+    for (let h = 0; h < 24; h += 0.05) {
+      const x = (h - rise) / len, v = x > 0 && x < 1 ? Math.pow(Math.sin(Math.PI * x), 1.25) : 0;
+      all += v; if (h <= hour) done += v;
+    }
+    return all ? done / all : 0;
+  }
+  const getKwp = () => (!isCloud() ? Demo.SYS.pvPeak : S.wp && (S.p1 || S.p2) ? ((S.p1 || 0) + (S.p2 || 0)) * S.wp / 1000 : null);
+  const getBattKwh = () => (!isCloud() ? Demo.SYS.battKwh : S.battKwh || null);
+
+  function ring(pct, color, label, sub) {
+    const r = 46, c = 2 * Math.PI * r, p = Math.max(0, Math.min(1, pct));
+    return `<svg viewBox="0 0 120 120" class="ring" role="img" aria-label="${Math.round(pct * 100)} %">
+      <circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--card-2)" stroke-width="12"/>
+      <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="12" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 60 60)"/>
+      <text x="60" y="58" text-anchor="middle" class="ring-big">${label}</text>
+      <text x="60" y="78" text-anchor="middle" class="ring-sub">${sub}</text></svg>`;
+  }
+  // Barra de progreso con marca opcional (ej.: "esperado a esta hora")
+  function meter(label, valueText, pct, color, opts = {}) {
+    const w = Math.max(0, Math.min(100, pct * 100));
+    const mk = opts.mark != null ? `<i class="mark" style="left:${Math.max(0, Math.min(100, opts.mark * 100))}%" title="${opts.markLabel || ''}"></i>` : '';
+    return `<div class="meter"><div class="meter-top"><span>${label}</span><b>${valueText}</b></div>
+      <div class="meter-track">${w > 0 ? `<div class="meter-fill" style="width:${Math.max(w, 1.5)}%;background:${color}"></div>` : ''}${mk}</div>
+      ${opts.foot ? `<div class="meter-foot">${opts.foot}</div>` : ''}</div>`;
+  }
+  // Barra apilada en porcentajes
+  function stack(parts) {
+    const total = parts.reduce((a, p) => a + Math.max(0, p.v), 0);
+    if (total <= 0) return '<div class="empty" style="padding:8px">Sin datos todavía.</div>';
+    const segs = parts.filter(p => p.v > 0).map(p => `<div class="seg-fill ${p.cls || ''}" style="flex:${p.v};background:${p.color}" title="${p.name}"></div>`).join('');
+    const leg = parts.map(p => `<div class="stack-leg"><i class="swatch ${p.cls || ''}" style="background:${p.color}"></i><span>${p.name}</span><b>${Math.round(Math.max(0, p.v) / total * 100)} %</b><small>${C.fmt(Math.max(0, p.v), 2)} kWh</small></div>`).join('');
+    return `<div class="stack-bar">${segs}</div><div class="stack-legs">${leg}</div>`;
+  }
+
+  async function renderGoals(alive, L, today) {
+    const box = $('#goals'); if (!box) return;
+    const now = new Date(), hour = now.getHours() + now.getMinutes() / 60;
+    const col = colors(), good = cssVar('--good'), warn = cssVar('--warn'), bad = cssVar('--bad');
+    const T = L.today;
+    const kwp = getKwp(), battKwh = getBattKwh();
+    const src = SRC();
+    const m = await src.month(now.getFullYear(), now.getMonth());
+    if (!alive() || !$('#goals')) return;
+    let html = '';
+
+    // 1) Meta de generación
+    if (kwp) {
+      const goal = kwp * dailyGoalPerKwp(now);
+      const frac = solarFraction(now, hour);
+      const expNow = goal * frac;
+      const pct = goal ? T.gen / goal : 0;
+      const pace = expNow > 0.05 ? T.gen / expNow : 1;
+      const st = frac >= 0.999 ? (pct >= 0.9 ? ['Meta cumplida', good] : pct >= 0.6 ? ['Día flojo', warn] : ['Muy por debajo', bad])
+        : (pace >= 0.9 ? ['Vas bien', good] : pace >= 0.6 ? ['Un poco atrasado', warn] : ['Muy atrasado', bad]);
+      const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const firstDay = Math.max(0, m.items.findIndex(it => it && it.gen > 0));   // si se instaló este mes, contar desde ese día
+      const mGoal = goal * (days - firstDay);
+      const mExpected = goal * (now.getDate() - 1 - firstDay + frac);
+      html += `<div class="section-title">Metas de hoy</div>
+      <div class="card goal-card">
+        <div class="goal-top">
+          ${ring(pct, st[1], `${Math.round(pct * 100)} %`, 'de la meta')}
+          <div class="goal-info">
+            <span class="chip" style="background:${st[1]}">${st[0]}</span>
+            <div class="goal-big">${C.fmt(T.gen, T.gen < 10 ? 2 : 1)} <small>de ${C.fmt(goal, goal < 10 ? 1 : 0)} kWh</small></div>
+            <div class="goal-sub">A esta hora deberías llevar <b>${C.fmt(expNow, expNow < 10 ? 2 : 1)} kWh</b> (${Math.round(frac * 100)} % del sol del día ya pasó).</div>
+          </div>
+        </div>
+        ${meter('Generación de hoy', `${C.fmt(T.gen, 2)} / ${C.fmt(goal, 1)} kWh`, pct, col.solar, { mark: frac, markLabel: 'Esperado a esta hora', foot: `La rayita marca lo esperado a esta hora · meta con ${C.fmt(kwp, 2)} kWp y el sol de ${MESES[now.getMonth()]} en Santiago` })}
+        ${meter(`Mes de ${MESES[now.getMonth()]}`, `${C.fmt(m.totals.gen, 1)} / ${C.fmt(mGoal, 0)} kWh`, mGoal ? m.totals.gen / mGoal : 0, col.solar, { mark: mGoal ? mExpected / mGoal : null, foot: `A hoy deberías llevar ${C.fmt(Math.max(0, mExpected), 0)} kWh${firstDay > 0 ? ` (desde el ${firstDay + 1}, cuando se instaló)` : ''}` })}
+        ${meter('Lo que usaste salió del sol', `${T.load > 0 ? Math.round(T.self / T.load * 100) : 0} % · meta 70 %`, T.load > 0 ? T.self / T.load : 0, (T.load > 0 && T.self / T.load >= 0.7) ? good : warn, { mark: 0.7 })}
+        ${meter('Uso de la red', `${C.fmt(T.imp, 2)} kWh · ${T.load > 0 ? Math.round(T.imp / T.load * 100) : 0} % del consumo`, T.load > 0 ? T.imp / T.load : 0, (T.load > 0 && T.imp / T.load <= 0.3) ? good : bad, { mark: 0.3, foot: 'Meta: menos del 30 % (la rayita)' })}
+        ${frac < 0.999 ? `<div class="goal-proj">Si sigue así, terminarías el día con <b>${C.fmt(frac > 0.05 ? T.gen / frac : T.gen, 1)} kWh</b>.</div>` : ''}
+      </div>`;
+    } else {
+      html += `<div class="section-title">Metas de hoy</div><div class="card cta"><div><b>Activa tus metas diarias</b><div class="desc">Dime cuántos paneles tienes y de cuántos watts. Con eso calculo cuánto deberías generar cada día.</div></div><button class="btn" id="go-equipo">Configurar</button></div>`;
+    }
+
+    // 2) Batería
+    const raw = L.raw || {};
+    const rv = (k) => (raw[k] && raw[k].value != null ? +raw[k].value : null);
+    const V = rv('batteryVoltage') || 48;
+    const maxChg = (rv('maximumTotalChargingCurrent') || 60) * V / 1000;
+    const maxDis = (isCloud() && Cloud.account().device.ratedKw) || Demo.SYS.battMaxKw;
+    const soc = Math.round(L.soc);
+    const socColor = soc < 25 ? bad : soc < 50 ? warn : good;
+    const charging = L.batt > 0.02, discharging = L.batt < -0.02;
+    let eta = '';
+    if (battKwh) {
+      if (charging && soc < 99) eta = `Se llena en ~${fmtH(((100 - soc) / 100) * battKwh / L.batt)}`;
+      else if (discharging) eta = `Dura ~${fmtH(((soc - 20) / 100) * battKwh / -L.batt)} a este ritmo`;
+      else eta = `Guarda ~${C.fmt(soc / 100 * battKwh, 1)} kWh`;
+    }
+    const capRef = battKwh || Math.max(T.chg || 0, T.dis || 0, 0.1);
+    html += `<div class="section-title">Batería</div>
+      <div class="card batt-card">
+        <div class="batt-top">
+          <div class="batt-icon"><div class="batt-body"><div class="batt-level" style="height:${Math.max(3, soc)}%;background:${socColor}"></div></div><div class="batt-cap"></div></div>
+          <div class="batt-info"><div class="goal-big">${soc} <small>%</small></div>
+            <div class="goal-sub">${charging ? `Cargando a ${kw(L.batt)}` : discharging ? `Descargando a ${kw(L.batt)}` : 'En reposo'}${eta ? ' · ' + eta : ''}</div>
+            ${battKwh ? `<div class="goal-sub">${C.fmt(soc / 100 * battKwh, 1)} de ${C.fmt(battKwh, 1)} kWh guardados</div>` : ''}</div>
+        </div>
+        ${meter('Carga ahora', charging ? `${kw(L.batt)} · ${Math.round(L.batt / maxChg * 100)} % del máximo` : '0 W', charging ? L.batt / maxChg : 0, col.batt, { foot: `Máximo del inversor: ${C.fmt(maxChg, 1)} kW` })}
+        ${meter('Descarga ahora', discharging ? `${kw(L.batt)} · ${Math.round(-L.batt / maxDis * 100)} % del máximo` : '0 W', discharging ? -L.batt / maxDis : 0, warn, { foot: `Máximo del inversor: ${C.fmt(maxDis, 1)} kW` })}
+        ${meter('Cargado hoy', `${C.fmt(T.chg || 0, 2)} kWh${battKwh ? ` · ${Math.round((T.chg || 0) / battKwh * 100)} % de la batería` : ''}`, (T.chg || 0) / capRef, col.batt)}
+        ${meter('Descargado hoy', `${C.fmt(T.dis || 0, 2)} kWh${battKwh ? ` · ${Math.round((T.dis || 0) / battKwh * 100)} % de la batería` : ''}`, (T.dis || 0) / capRef, warn)}
+        <div id="chart-soc" style="margin-top:8px"></div>
+        <label class="pv-row">Capacidad de la batería (kWh) <input type="number" inputmode="decimal" min="0.5" max="200" step="0.1" id="in-batt" value="${S.battKwh || ''}" placeholder="${battKwh ? C.fmt(battKwh, 1) : 'ej. 5,1'}"></label>
+        <div class="pv-hint">Si sabes los Ah: ${C.fmt(V > 40 ? 48 : 24, 0)} V × Ah ÷ 1000. Ej.: 48 V × 100 Ah = 4,8 kWh.</div>
+      </div>`;
+
+    // 3) Balance de energía de hoy
+    const fromSun = Math.max(0, T.load - T.imp - (T.dis || 0));
+    const sunToHouse = fromSun, sunToBatt = T.chg || 0, sunToGrid = T.exp || 0;
+    const parts = [{ name: 'Casa', v: sunToHouse, color: col.home }, { name: 'Batería', v: sunToBatt, color: col.batt }, { name: 'Vendido a la red', v: sunToGrid, color: cssVar('--grid') }];
+    let lost = 0;
+    if (kwp) {
+      const expNow = kwp * dailyGoalPerKwp(now) * solarFraction(now, hour);
+      if (L.soc >= 95 && expNow > T.gen * 1.5) lost = expNow - T.gen;
+      if (lost > 0) parts.push({ name: 'Sol sin aprovechar (aprox.)', v: lost, color: cssVar('--text-3'), cls: 'hatch' });
+    }
+    html += `<div class="section-title">Tu energía hoy</div>
+      <div class="card">
+        <div class="stack-title">¿De dónde vino lo que usó la casa?</div>
+        ${stack([{ name: 'Sol directo', v: fromSun, color: col.solar }, { name: 'Batería', v: T.dis || 0, color: col.batt }, { name: 'Red eléctrica', v: T.imp, color: cssVar('--grid') }])}
+        <div class="stack-title" style="margin-top:16px">¿A dónde fue la energía del sol?</div>
+        ${stack(parts)}
+        ${lost > 0 ? `<p class="note" style="margin:8px 0 0">Con la batería llena, el sol que la casa no usa se pierde (no se vende a la red). Revisa la pestaña <b>Equipo → Mis paneles</b>.</p>` : ''}
+      </div>`;
+
+    box.innerHTML = html;
+    if ($('#go-equipo')) $('#go-equipo').addEventListener('click', () => go('equipo'));
+    $('#in-batt').addEventListener('change', (e) => { const v = parseFloat(String(e.target.value).replace(',', '.')); S.battKwh = v > 0 ? v : null; save(); render(); });
+    if (today && today.t.length) C.seriesChart($('#chart-soc'), today.t, [{ name: 'Batería', color: col.batt, values: today.soc }], col, { unit: '%', dec: 0, min: 0, max: 100 });
+  }
+  function fmtH(h) {
+    if (!isFinite(h) || h <= 0) return '–';
+    if (h < 1) return Math.round(h * 60) + ' min';
+    if (h < 48) return C.fmt(h, h < 10 ? 1 : 0) + ' h';
+    return Math.round(h / 24) + ' días';
   }
 
   // ---------- PREGUNTARLE A CLAUDE ----------
@@ -196,6 +350,12 @@
     lines.push(`- Batería: ${Math.round(L.soc)} %${L.batt > 0.02 ? `, cargando ${kw(L.batt)}` : L.batt < -0.02 ? `, descargando ${kw(L.batt)}` : ''}`);
     const T = L.today;
     lines.push('', 'HOY:', `- Generado ${f1(T.gen)} kWh · Consumo ${f1(T.load)} kWh · Sacado de la red ${f1(T.imp)} kWh · ${T.load > 0 ? Math.round(T.self / T.load * 100) : 0} % salió del sol`);
+    const kwpS = getKwp();
+    if (kwpS) {
+      const g = kwpS * dailyGoalPerKwp(now), fr = solarFraction(now, now.getHours() + now.getMinutes() / 60);
+      lines.push(`- Meta de hoy: ${f1(g)} kWh (${C.fmt(kwpS, 2)} kWp${isCloud() ? `: ${(S.p1 || 0) + (S.p2 || 0)} paneles de ${S.wp} W` : ''}); a esta hora debería llevar ${f1(g * fr)} kWh.`);
+    }
+    lines.push(`- Batería: cargó ${f1(T.chg || 0)} kWh y descargó ${f1(T.dis || 0)} kWh hoy${getBattKwh() ? ` (capacidad ${C.fmt(getBattKwh(), 1)} kWh)` : ''}.`);
     const days = m.items.filter(it => it && it.date.toDateString() !== now.toDateString() && (it.gen > 0 || it.load > 0)).slice(-7);
     if (days.length) {
       lines.push('', 'DÍAS ANTERIORES (generado / consumo / de la red, en kWh):');
@@ -205,7 +365,7 @@
     const raw = L.raw || {};
     const rv = (k, u) => (raw[k] && raw[k].value != null ? `${raw[k].value} ${u}` : null);
     const inv = [['Temp. inversor', rv('inverterTemperature', '°C')], ['Voltaje batería', rv('batteryVoltage', 'V')], ['Voltaje red', rv('acInputVoltage', 'V')],
-      ['Panel 1', raw.pvPower ? `${kw(+raw.pvPower.value)}, ${raw.pvVoltage && raw.pvVoltage.value} V, ${raw.pvCurrent && raw.pvCurrent.value} A` : null], ['Panel 2', raw.pv2Power ? `${kw(+raw.pv2Power.value)}, ${raw.pv2Voltage && raw.pv2Voltage.value} V, ${raw.pv2Current && raw.pv2Current.value} A` : null], ['Temp. transformador', rv('transformerTemperature', '°C')], ['Voltaje flotación batería', rv('floatChargingVoltage', 'V')], ['Carga inversor', rv('outputLoadPercent', '%')], ['Modo', raw.mode ? raw.mode.value : null]].filter(x => x[1]);
+      ['Entrada de paneles 1', raw.pvPower ? `${kw(+raw.pvPower.value)}, ${raw.pvVoltage && raw.pvVoltage.value} V, ${raw.pvCurrent && raw.pvCurrent.value} A` : null], ['Entrada de paneles 2', raw.pv2Power ? `${kw(+raw.pv2Power.value)}, ${raw.pv2Voltage && raw.pv2Voltage.value} V, ${raw.pv2Current && raw.pv2Current.value} A` : null], ['Temp. transformador', rv('transformerTemperature', '°C')], ['Voltaje flotación batería', rv('floatChargingVoltage', 'V')], ['Carga inversor', rv('outputLoadPercent', '%')], ['Modo', raw.mode ? raw.mode.value : null]].filter(x => x[1]);
     if (inv.length) lines.push('', 'INVERSOR: ' + inv.map(([a, b]) => `${a} ${b}`).join(' · '));
     const al = await buildAlerts();
     if (al.length) lines.push('', 'AVISOS: ' + al.map(a => `${a.title} (${a.desc})`).join(' | '));
@@ -375,8 +535,8 @@
     ['eepromDataAbnormality', 'Memoria interna', '1'], ['eepromReadWriteException', 'Lectura de memoria', '1'],
   ];
   const METRICS = {
-    paneles: { name: 'Paneles', unit: 'kW', dec: 2, keys: [['pvPower', 'Panel 1'], ['pv2Power', 'Panel 2']] },
-    vpaneles: { name: 'Voltaje paneles', unit: 'V', dec: 0, keys: [['pvVoltage', 'Panel 1'], ['pv2Voltage', 'Panel 2']] },
+    paneles: { name: 'Paneles', unit: 'kW', dec: 2, keys: [['pvPower', 'Entrada 1'], ['pv2Power', 'Entrada 2']] },
+    vpaneles: { name: 'Voltaje paneles', unit: 'V', dec: 0, keys: [['pvVoltage', 'Entrada 1'], ['pv2Voltage', 'Entrada 2']] },
     bateria: { name: 'Batería', unit: 'V', dec: 1, keys: [['batteryVoltage', 'Voltaje']] },
     temp: { name: 'Temperaturas', unit: '°C', dec: 0, keys: [['inverterTemperature', 'Inversor'], ['transformerTemperature', 'Transformador'], ['pvTemperature', 'Paneles (MPPT)']] },
     red: { name: 'Red y casa', unit: 'V', dec: 0, keys: [['acInputVoltage', 'Red'], ['outputVoltage', 'Casa']] },
@@ -427,6 +587,7 @@
         <div class="desc">${show('mode') || ''}${raw('statusCode') !== null ? ` · código ${esc(raw('statusCode'))}` : ''} · ${checked.length} chequeos</div></div></div>
         ${bad.length ? `<div class="flags">${bad.map(([, l]) => `<div class="flag bad">✕ ${l.replace('normal', 'ANORMAL')}</div>`).join('')}</div>` : ''}
       </div>
+      <div id="panel-check"><div class="section-title">Mis paneles</div><div class="card empty">Calculando…</div></div>
       ${alarmList.length ? `<div class="section-title">Alarmas registradas</div><div class="list">${alarmList.slice(0, 10).map(a => {
         const t = a.eventAttributeNameDisplay || a.alarmName || a.eventName || a.name || a.attributeName || 'Alarma';
         const d = a.createdAt || a.alarmAt || a.time || a.occurredAt;
@@ -441,8 +602,8 @@
         <div class="legend">${M.keys.map(([, n], i) => `<span><i class="swatch" style="background:${seriesColor(i)}"></i>${n}</span>`).join('')}</div>
       </div>
 
-      ${section('Paneles solares', [['Producción total ahora', kwW('generationPower')], ['Panel 1 · potencia', kwW('pvPower')], ['Panel 1 · voltaje', 'pvVoltage', 0], ['Panel 1 · corriente', 'pvCurrent', 1],
-        ['Panel 2 · potencia', kwW('pv2Power')], ['Panel 2 · voltaje', 'pv2Voltage', 0], ['Panel 2 · corriente', 'pv2Current', 1], ['Carga desde los paneles', 'pvChargingMark'],
+      ${section('Paneles solares', [['Producción total ahora', kwW('generationPower')], ['Entrada 1 · potencia', kwW('pvPower')], ['Entrada 1 · voltaje', 'pvVoltage', 0], ['Entrada 1 · corriente', 'pvCurrent', 1],
+        ['Entrada 2 · potencia', kwW('pv2Power')], ['Entrada 2 · voltaje', 'pv2Voltage', 0], ['Entrada 2 · corriente', 'pv2Current', 1], ['Carga desde los paneles', 'pvChargingMark'],
         ['Generado hoy', 'tqfDailyElectricityGeneration', 2], ['Generado este mes', 'tqfMonthlyElectricityGeneration', 1], ['Generado este año', 'tqfYearlyElectricityGeneration', 1], ['Generado en total', 'tqfTotalElectricityGeneration', 1]])}
       ${section('Batería', [['Carga', 'batteryCapacity', 0], ['Estado', 'batteryStatus'], ['Corriente', battA], ['Voltaje', 'batteryVoltage', 1],
         ['Tipo de batería', 'batteryType'], ['Batería de', () => (cells ? `${cells * 12} V (${cells} en serie)` : null)], ['Voltaje de carga (absorción)', 'strongChargingVoltage', 1], ['Voltaje de flotación', 'floatChargingVoltage', 1],
@@ -452,7 +613,7 @@
       ${section('Salida a la casa', [['Potencia', kwW('outputActivePower')], ['Potencia aparente', 'outputApparentPower', 0], ['Voltaje', 'outputVoltage', 0], ['Frecuencia', 'outputFrequency', 1], ['Uso del inversor', 'outputLoadPercent', 0]])}
       ${section('Inversor', [['Modo de trabajo', 'mode'], ['Prioridad de carga', 'chargingPriorityOrder'], ['Prioridad de los paneles', 'pvEnergyFeedingPriority'], ['Modo ECO', 'eco'],
         ['Temp. inversor', 'inverterTemperature', 0], ['Temp. transformador', 'transformerTemperature', 0], ['Temp. rectificador', 'dcRectificationTemperature', 0], ['Temp. elevador (boost)', 'boostTemperature', 0],
-        ['Temp. paneles 1 / 2 (MPPT)', () => (raw('pvTemperature') === null ? null : `${raw('pvTemperature')} / ${raw('pv2Temperature') ?? '–'} °C`)], ['Ventiladores', () => (raw('fan1Speed') === null ? null : `${raw('fan1Speed')} % / ${raw('fan2Speed') ?? '–'} %`)],
+        ['Temp. entradas 1 / 2 (MPPT)', () => (raw('pvTemperature') === null ? null : `${raw('pvTemperature')} / ${raw('pv2Temperature') ?? '–'} °C`)], ['Ventiladores', () => (raw('fan1Speed') === null ? null : `${raw('fan1Speed')} % / ${raw('fan2Speed') ?? '–'} %`)],
         ['Voltaje interno (bus)', 'busVoltage', 0], ['Modelo', 'deviceType'], ['Versión de software', 'softwareVersion']])}
       ${checked.length ? `<div class="section-title">Chequeos</div><div class="list">${checked.map(([k, l, b]) => { const ok = String(raw(k)) !== b; return `<div class="row plain"><div class="main"><div class="title">${l}</div></div><div class="right" style="color:${ok ? cssVar('--good') : cssVar('--bad')}">${ok ? '✓ Bien' : '✕ Revisar'}</div></div>`; }).join('')}</div>` : ''}
       ${allGroups ? `<div class="section-title">Todos los datos (${Object.keys(f).length})</div>${allGroups}` : ''}
@@ -461,10 +622,92 @@
     document.querySelectorAll('#screen-equipo .chips button').forEach(b => b.addEventListener('click', () => { EQ.metric = b.dataset.m; render(); }));
     $('#eq-prev').addEventListener('click', () => { EQ.ref = stepRef(EQ.ref, 'dia', -1); render(); });
     $('#eq-next').addEventListener('click', () => { const r = stepRef(EQ.ref, 'dia', 1); if (r <= new Date()) { EQ.ref = r; render(); } });
+    renderPanelCheck(alive, raw).catch(e => { const el = $('#panel-check'); if (el) el.innerHTML = `<div class="section-title">Mis paneles</div><div class="card empty">No pude calcular: ${esc(e.message || e)}</div>`; });
     const data = await Cloud.daySeries(EQ.ref, M.keys.map(k => k[0]));
     if (!alive()) return;
     C.seriesChart($('#chart-eq'), data.t, M.keys.map(([k, n], i) => ({ name: n, color: seriesColor(i), values: data.values[k] })), colors(), { unit: M.unit, dec: M.dec, zero: M.unit === 'kW' });
   }
+  // ---------- MIS PANELES: cuántos hay y cuánto genera cada uno ----------
+  // El inversor mide cada ENTRADA (una fila de paneles en serie), no cada panel. Con el número de paneles
+  // y su potencia calculo lo que genera cada uno y lo comparo con lo esperado.
+  async function renderPanelCheck(alive, raw) {
+    const today = new Date();
+    const d = await Cloud.daySeries(today, ['pvPower', 'pv2Power', 'pvVoltage', 'pv2Voltage']);
+    if (!alive() || !$('#panel-check')) return;
+    const integ = (arr) => { let e = 0; for (let i = 0; i < arr.length; i++) { const nx = i + 1 < d.t.length ? d.t[i + 1] : d.t[i] + 5 / 60; e += arr[i] * Math.min(Math.max(0, nx - d.t[i]), 10 / 60); } return e; };
+    const inputs = [
+      { n: 1, key: 'p1', P: +(raw('pvPower') || 0), V: +(raw('pvVoltage') || 0), A: +(raw('pvCurrent') || 0), E: integ(d.values.pvPower), peak: Math.max(0, ...d.values.pvPower), vmax: Math.max(0, ...d.values.pvVoltage) },
+      { n: 2, key: 'p2', P: +(raw('pv2Power') || 0), V: +(raw('pv2Voltage') || 0), A: +(raw('pv2Current') || 0), E: integ(d.values.pv2Power), peak: Math.max(0, ...d.values.pv2Power), vmax: Math.max(0, ...d.values.pv2Voltage) },
+    ];
+    // Estimación por voltaje: cada panel aporta ~41 V trabajando y ~50 V sin carga
+    inputs.forEach(x => { const v = Math.max(x.V, x.vmax); x.estLo = v > 30 ? Math.max(1, Math.round(v / 50)) : 0; x.estHi = v > 30 ? Math.max(1, Math.round(v / 41)) : 0; x.count = S[x.key] || 0; });
+    const wp = S.wp || 0;
+    const known = wp > 0 && inputs.every(x => x.count > 0 || x.vmax < 30);
+    const totalPanels = inputs.reduce((a, x) => a + x.count, 0);
+    const kwp = totalPanels * wp / 1000;
+    const totalE = inputs.reduce((a, x) => a + x.E, 0);
+    const hour = today.getHours() + today.getMinutes() / 60;
+
+    let verdict = '';
+    if (known && kwp > 0) {
+      const yieldNow = totalE / kwp;                                           // kWh por kWp hoy
+      const expected = dailyGoalPerKwp(today) * solarFraction(today, hour);   // lo esperado a esta hora (kWh por kWp)
+      const pctPeak = Math.max(...inputs.map(x => (x.count ? x.peak / (x.count * wp / 1000) : 0))) * 100;
+      const perPanel = inputs.filter(x => x.count).map(x => x.E / x.count);
+      const unbalance = perPanel.length === 2 && Math.max(...perPanel) > 0 ? 1 - Math.min(...perPanel) / Math.max(...perPanel) : 0;
+      const lvl = expected > 0.5 && yieldNow < expected * 0.25 ? 'bad' : expected > 0.5 && yieldNow < expected * 0.6 ? 'warn' : 'good';
+      // ¿Los paneles están "frenados"? Voltaje alto + poca corriente + batería llena + casa alimentada por la red
+      const soc = +(raw('batteryCapacity') || 0), mode = String(raw('mode') || '');
+      const highV = inputs.some(x => x.count && x.V > x.count * 36), lowA = inputs.every(x => x.A < 1.5);
+      const throttled = lvl !== 'good' && highV && lowA && soc >= 95;
+      if (throttled) {
+        verdict = `<div class="verdict warn">
+          <b>Los paneles parecen estar bien: el inversor los está frenando</b>
+          <div>Tienen buen voltaje (${C.fmt(Math.max(...inputs.map(x => x.V)), 0)} V), o sea reciben sol, pero casi no les pide corriente (${C.fmt(Math.max(...inputs.map(x => x.A)), 1)} A).</div>
+          <div>Pasa porque la batería está llena (${Math.round(soc)} %)${mode === 'L' || mode === 'M' ? ' y el inversor está en <b>modo red</b>: la casa se alimenta de la red y los paneles solo cargan la batería' : ''}${raw('gridConnectionFunction') !== null && String(raw('gridConnectionFunction')) === '0' ? ', y la venta a la red está desactivada' : ''}. Lo que sobra de sol se pierde.</div>
+          <div><b>Qué revisar:</b> en la configuración del inversor, la <b>prioridad de salida</b> (SBU o SUB hace que la casa use primero el sol). Hoy pudiste generar unos ${C.fmt(expected * kwp, 0)} kWh y se aprovecharon ${C.fmt(totalE, 1)}.</div>
+          <div>Pregúntale al instalador antes de cambiarlo.</div>
+        </div>`;
+      } else
+      verdict = `<div class="verdict ${lvl}">
+        <b>${lvl === 'bad' ? 'Están generando MUY por debajo de lo normal' : lvl === 'warn' ? 'Están generando menos de lo esperado' : 'Generación normal'}</b>
+        <div>Hoy: ${C.fmt(totalE, 2)} kWh con ${C.fmt(kwp, 1)} kWp instalados = ${C.fmt(yieldNow, 2)} kWh por kWp. Lo normal en Santiago a esta hora es unos ${C.fmt(expected, 1)} (≈ ${C.fmt(expected * kwp, 1)} kWh).</div>
+        <div>Mejor momento de hoy: ${C.fmt(pctPeak, 0)} % de la potencia de los paneles${pctPeak < 30 ? ' (con sol directo debería pasar del 60 %)' : ''}.</div>
+        ${unbalance > 0.3 ? `<div>Una entrada genera ${Math.round(unbalance * 100)} % menos por panel que la otra: puede haber sombra, suciedad o un panel o conexión con problema en esa fila.</div>` : ''}
+        ${lvl !== 'good' ? '<div>Si hoy estuvo despejado, revisa: sombra, suciedad, conexiones de los paneles y que el interruptor de los paneles esté encendido.</div>' : ''}
+      </div>`;
+    }
+
+    const rows = inputs.map(x => {
+      const c = x.count, cap = c && wp ? c * wp / 1000 : 0;
+      const est = x.estLo === x.estHi ? String(x.estLo) : `${x.estLo}–${x.estHi}`;
+      return `<div class="pv-input">
+        <div class="pv-head"><b>Entrada ${x.n}</b><span>${C.fmt(x.V, 0)} V · ${C.fmt(x.A, 1)} A · ${kw(x.P)}</span></div>
+        <label class="pv-row">Paneles en esta entrada <input type="number" inputmode="numeric" min="0" max="40" data-k="${x.key}" value="${c || ''}" placeholder="${x.estLo ? est : '?'}"></label>
+        ${x.estLo ? `<div class="pv-hint">Según el voltaje parecen ser ${x.estLo === x.estHi ? x.estLo : `entre ${x.estLo} y ${x.estHi}`} paneles.</div>` : '<div class="pv-hint">Sin voltaje: puede que no tenga paneles conectados.</div>'}
+        ${c ? `<div class="pv-grid">
+          <div><span>Cada panel ahora</span><b>${kw(x.P / c)}</b></div>
+          <div><span>Cada panel hoy</span><b>${C.fmt(x.E / c * 1000, 0)} Wh</b></div>
+          <div><span>Máximo de hoy (por panel)</span><b>${kw(x.peak / c)}${wp ? ` <small>(${C.fmt(x.peak / cap * 100, 0)} %)</small>` : ''}</b></div>
+          <div><span>Entrada completa hoy</span><b>${C.fmt(x.E, 2)} kWh</b></div>
+        </div>` : ''}
+      </div>`;
+    }).join('');
+
+    $('#panel-check').innerHTML = `<div class="section-title">Mis paneles</div>
+      <div class="card">
+        <div class="pv-top">${known ? `<b>${totalPanels} paneles de ${wp} W</b> = ${C.fmt(kwp, 2)} kWp` : '<b>Cuéntame tus paneles</b> para revisar si generan bien'}</div>
+        <label class="pv-row">Potencia de cada panel (W) <input type="number" inputmode="numeric" min="50" max="1000" data-k="wp" value="${wp || ''}" placeholder="ej. 550"></label>
+        <div class="pv-hint">Sale en la etiqueta de atrás del panel («Pmax» o «Potencia máxima»).</div>
+        ${rows}
+        ${verdict}
+        <p class="note" style="margin:10px 0 0">El inversor mide cada entrada completa, no cada panel: «cada panel» es el promedio de su fila. Datos de hoy hasta las ${hhmm(today)}</p>
+      </div>`;
+    $('#panel-check').querySelectorAll('input[data-k]').forEach(i => i.addEventListener('change', () => {
+      const v = parseInt(i.value, 10); S[i.dataset.k] = v > 0 ? v : null; save(); renderPanelCheck(alive, raw);
+    }));
+  }
+
   const seriesColor = (i) => [cssVar('--solar'), cssVar('--home'), cssVar('--batt')][i] || cssVar('--grid');
 
   // ---------- AVISOS ----------
