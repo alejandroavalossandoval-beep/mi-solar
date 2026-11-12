@@ -51,6 +51,7 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8v.2"/>',
     down: '<path d="M4 7l6 6 4-4 6 6M20 10v5h-5"/>',
     ok: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    chat: '<path d="M4.5 5.5h15a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V17.5h-1A1.5 1.5 0 0 1 3 16V7a1.5 1.5 0 0 1 1.5-1.5zM8 10.5h8M8 13.5h5"/>',
     link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
   };
   const svgIcon = (name) => `<svg viewBox="0 0 24 24">${ICON[name]}</svg>`;
@@ -164,9 +165,82 @@
       <div class="card"><div id="chart-hoy"></div>
         <div class="legend"><span><i class="swatch" style="background:${col.solar}"></i>Generación</span><span><i class="swatch" style="background:${col.home}"></i>Consumo</span></div>
       </div>
+      <div class="card ask">
+        <div class="ask-head"><div class="ask-ico">${svgIcon('chat')}</div><div><div class="title">¿Dudas sobre tus paneles?</div><div class="desc">Pregúntale a Claude con tus datos de hoy.</div></div></div>
+        <button class="btn wide" id="ask-claude">Preguntarle a Claude</button>
+        <button class="btn-link" id="ask-share">Compartir resumen…</button>
+      </div>
       ${inverterRows(L.raw)}
       ${!isCloud() ? '<p class="note">Estos son datos de ejemplo. Conecta tu cuenta de Solar of Things en la pestaña Avisos.</p>' : ''}`;
     C.dayChart($('#chart-hoy'), today, col);
+    $('#ask-claude').addEventListener('click', () => askClaude(false));
+    $('#ask-share').addEventListener('click', () => askClaude(true));
+  }
+
+  // ---------- PREGUNTARLE A CLAUDE ----------
+  // Arma un resumen en texto con los datos y lo abre en Claude (usa el plan Pro, sin costo extra)
+  async function buildSummary() {
+    const src = SRC(), now = new Date();
+    const L = await src.live();
+    const m = await src.month(now.getFullYear(), now.getMonth());
+    const acc = isCloud() ? Cloud.account() : null;
+    const f1 = (v) => C.fmt(v, 2);
+    const lines = [];
+    lines.push('Hola Claude. Te paso los datos de mis paneles solares (los saco de mi app Mi Solar, conectada a Solar of Things).');
+    if (!isCloud()) lines.push('OJO: son datos de EJEMPLO, todavía no conecto mi cuenta.');
+    if (acc) lines.push(`Equipo: inversor ${acc.device.model || ''} de ${acc.device.ratedKw || '?'} kW, instalado el ${new Date(acc.device.installedAt).toLocaleDateString('es-CL')}. Vivo en Chile (Santiago).`);
+    const fh = (d) => `${d.toLocaleDateString('es-CL')} a las ${d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+    lines.push(`Fecha y hora: ${fh(now)}. Último dato del inversor: ${fh(L.at)}${L.online === false ? ' (¡está SIN SEÑAL!)' : ''}.`);
+    lines.push('', 'AHORA:');
+    lines.push(`- Paneles: ${kw(L.pv)} · Casa: ${kw(L.load)} · Red: ${kw(L.grid)}${L.grid > 0.02 ? ' (usando la red)' : L.grid < -0.02 ? ' (vendiendo)' : ''}`);
+    lines.push(`- Batería: ${Math.round(L.soc)} %${L.batt > 0.02 ? `, cargando ${kw(L.batt)}` : L.batt < -0.02 ? `, descargando ${kw(L.batt)}` : ''}`);
+    const T = L.today;
+    lines.push('', 'HOY:', `- Generado ${f1(T.gen)} kWh · Consumo ${f1(T.load)} kWh · Sacado de la red ${f1(T.imp)} kWh · ${T.load > 0 ? Math.round(T.self / T.load * 100) : 0} % salió del sol`);
+    const days = m.items.filter(it => it && it.date.toDateString() !== now.toDateString() && (it.gen > 0 || it.load > 0)).slice(-7);
+    if (days.length) {
+      lines.push('', 'DÍAS ANTERIORES (generado / consumo / de la red, en kWh):');
+      days.forEach(it => lines.push(`- ${it.date.toLocaleDateString('es-CL', { weekday: 'short', day: 'numeric', month: 'short' })}: ${f1(it.gen)} / ${f1(it.load)} / ${f1(it.imp)}`));
+    }
+    lines.push('', `ESTE MES: generado ${f1(m.totals.gen)} kWh, consumo ${f1(m.totals.load)} kWh, de la red ${f1(m.totals.imp)} kWh, ahorro aprox. ${clp(savingOf(m.totals))} (precio kWh $${S.tarifa}).`);
+    const raw = L.raw || {};
+    const rv = (k, u) => (raw[k] && raw[k].value != null ? `${raw[k].value} ${u}` : null);
+    const inv = [['Temp. inversor', rv('inverterTemperature', '°C')], ['Voltaje batería', rv('batteryVoltage', 'V')], ['Voltaje red', rv('acInputVoltage', 'V')],
+      ['Voltaje paneles', rv('pvVoltage', 'V')], ['Corriente paneles', rv('pvCurrent', 'A')], ['Carga inversor', rv('outputLoadPercent', '%')], ['Modo', raw.mode ? raw.mode.value : null]].filter(x => x[1]);
+    if (inv.length) lines.push('', 'INVERSOR: ' + inv.map(([a, b]) => `${a} ${b}`).join(' · '));
+    const al = await buildAlerts();
+    if (al.length) lines.push('', 'AVISOS: ' + al.map(a => `${a.title} (${a.desc})`).join(' | '));
+    lines.push('', 'Explícame simple, no soy técnico. Mi pregunta es: ');
+    return lines.join('\n');
+  }
+
+  async function askClaude(share) {
+    const btn = $(share ? '#ask-share' : '#ask-claude');
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Preparando…';
+    try {
+      const text = await buildSummary();
+      try { await navigator.clipboard.writeText(text); } catch (e) { /* sin permiso de portapapeles */ }
+      if (share && navigator.share) {
+        await navigator.share({ text }).catch(() => {});
+      } else {
+        // Abre Claude con el resumen ya escrito; también queda copiado por si hay que pegarlo
+        window.open('https://claude.ai/new?q=' + encodeURIComponent(text), '_blank');
+        toast('Resumen copiado. Si no aparece escrito en Claude, pégalo.');
+      }
+    } catch (e) {
+      toast('No pude armar el resumen: ' + (e.message || e));
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  }
+
+  window.MiSolar = { buildSummary };
+
+  function toast(msg) {
+    let t = $('#toast');
+    if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3500);
   }
 
   // ---------- HISTORIAL ----------
