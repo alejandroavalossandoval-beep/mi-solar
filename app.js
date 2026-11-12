@@ -1,0 +1,383 @@
+/* Mi Solar — pantallas */
+(function () {
+  const Demo = window.SolarData, Cloud = window.SolarCloud, C = window.Charts;
+  const $ = (s, r = document) => r.querySelector(s);
+
+  // Fuente de datos: la nube si hay cuenta conectada; si no, la demostración
+  const DemoAsync = {
+    live: async () => Demo.live(), day: async (d, h) => Demo.day(d, h),
+    month: async (y, m, u) => Demo.month(y, m, u), year: async (y, u) => Demo.year(y, u),
+  };
+  const isCloud = () => Cloud.connected();
+  const SRC = () => (isCloud() ? Cloud : DemoAsync);
+  const MESES = Demo.MESES;
+
+  // ---------- Ajustes (guardados en el celular) ----------
+  const DEFAULTS = { tarifa: 210, inyeccion: 110, co2: 0.3, battLow: 25, aBattLow: true, aOffline: true, aLowProd: true, aFull: false };
+  let S = { ...DEFAULTS };
+  try { Object.assign(S, JSON.parse(localStorage.getItem('miSolar.ajustes') || '{}')); } catch (e) { /* sin almacenamiento */ }
+  const save = () => { try { localStorage.setItem('miSolar.ajustes', JSON.stringify(S)); } catch (e) { /* nada */ } };
+
+  // ---------- Formato ----------
+  const kwh = (v, d = 1) => C.fmt(v, d);
+  const kw = (v) => (Math.abs(v) < 1 ? C.fmt(Math.abs(v) * 1000, 0) + ' W' : C.fmt(Math.abs(v), 2) + ' kW');
+  const clp = (v) => '$' + Math.round(v).toLocaleString('es-CL');
+  const hhmm = (d) => d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+  const savingOf = (t) => t.self * S.tarifa + t.exp * S.inyeccion;
+  const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const colors = () => ({ solar: cssVar('--solar'), home: cssVar('--home'), batt: cssVar('--batt'), solarSoft: cssVar('--solar-soft'), surface: cssVar('--card'), hover: cssVar('--card-2') });
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  function ago(d) {
+    const m = Math.round((Date.now() - d) / 60000);
+    if (m < 1) return 'recién';
+    if (m < 60) return `hace ${m} min`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `hace ${h} h`;
+    const dd = Math.round(h / 24);
+    return dd === 1 ? 'ayer' : `hace ${dd} días`;
+  }
+
+  // ---------- Íconos ----------
+  const ICON = {
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+    home: '<path d="M3.5 11 12 4l8.5 7M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
+    batt: '<rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10.5v3M7 10.5v3M10.5 10.5v3"/>',
+    grid: '<path d="M8 21 12 3l4 18M9.5 14h5M10.5 9h3M5 6h14"/>',
+    inv: '<rect x="5" y="4" width="14" height="16" rx="2.5"/><path d="M9 10.5 11 8.5l2 4 2-2M9 16h6"/>',
+    warn: '<path d="M12 4 2.8 19.5h18.4zM12 10v4.5M12 17.2v.3"/>',
+    off: '<path d="M2 8.5a15 15 0 0 1 20 0M5.5 12a10 10 0 0 1 13 0M9 15.5a5 5 0 0 1 6 0M12 19v.2M3 3l18 18"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8v.2"/>',
+    down: '<path d="M4 7l6 6 4-4 6 6M20 10v5h-5"/>',
+    ok: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    link: '<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
+  };
+  const svgIcon = (name) => `<svg viewBox="0 0 24 24">${ICON[name]}</svg>`;
+
+  // ---------- Pestañas ----------
+  let tab = 'ahora';
+  let renderId = 0;
+  function go(t) {
+    tab = t;
+    document.querySelectorAll('.tab').forEach(b => {
+      if (b.dataset.tab === t) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('.screen').forEach(s => { s.hidden = s.id !== 'screen-' + t; });
+    C.hideTip();
+    render();
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => go(b.dataset.tab)));
+
+  const titleOf = (t) => ({ ahora: 'Mi Solar', historial: 'Historial', ahorro: 'Ahorro', avisos: 'Avisos' }[t]);
+  async function render() {
+    const id = ++renderId;
+    const fn = { ahora: renderAhora, historial: renderHistorial, ahorro: renderAhorro, avisos: renderAvisos }[tab];
+    try { await fn(() => id === renderId); }
+    catch (e) {
+      if (id !== renderId) return;
+      $('#screen-' + tab).innerHTML = `${head(titleOf(tab))}<div class="card empty">No pude leer los datos.<br><small>${esc(e.message || e)}</small><br><br><button class="btn" id="retry">Reintentar</button></div>`;
+      $('#retry').addEventListener('click', render);
+    }
+  }
+  const modePill = (online = true) => !isCloud()
+    ? '<span class="pill"><i class="dot demo"></i>Demostración</span>'
+    : online ? '<span class="pill"><i class="dot"></i>En línea</span>' : '<span class="pill"><i class="dot off"></i>Sin señal</span>';
+  const head = (title, sub = '', online) => `<header class="head"><div><h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div>${modePill(online)}</header>`;
+  const loading = (t) => { const el = $('#screen-' + t); if (!el.innerHTML.trim()) el.innerHTML = `${head(titleOf(t))}<div class="card empty">Cargando…</div>`; };
+
+  // ---------- AHORA ----------
+  function flowSvg(L) {
+    const col = colors();
+    const nodes = {
+      sol:  { x: 62,  y: 52,  c: col.solar, icon: 'sun',  lbl: 'Paneles', val: kw(L.pv) },
+      red:  { x: 278, y: 52,  c: cssVar('--grid'), icon: 'grid', lbl: L.grid > 0.02 ? 'Usando la red' : L.grid < -0.02 ? 'Vendiendo a la red' : 'Red', val: kw(L.grid) },
+      bat:  { x: 62,  y: 196, c: col.batt,  icon: 'batt', lbl: `Batería ${Math.round(L.soc)} %`, val: (L.batt > 0.02 ? '+' : L.batt < -0.02 ? '−' : '') + kw(L.batt) },
+      casa: { x: 278, y: 196, c: col.home,  icon: 'home', lbl: 'Casa', val: kw(L.load) },
+    };
+    const hub = { x: 170, y: 124 };
+    const wires = [  // [nodo, hay flujo, hacia el inversor, potencia]
+      ['sol', L.pv > 0.02, true, L.pv],
+      ['red', Math.abs(L.grid) > 0.02, L.grid > 0, L.grid],
+      ['bat', Math.abs(L.batt) > 0.02, L.batt < 0, L.batt],
+      ['casa', L.load > 0.02, false, L.load],
+    ];
+    let s = `<svg viewBox="0 0 340 290" role="img" aria-label="Flujo de energía en este momento">`;
+    for (const [k, on, toHub, p] of wires) {
+      const n = nodes[k];
+      const d = `M${n.x},${n.y}L${hub.x},${hub.y}`;
+      s += `<path class="wire" d="${d}"/>`;
+      if (on && L.online !== false) s += `<path class="wire-on${toHub ? '' : ' rev'}" d="${d}" stroke="${n.c}" style="animation-duration:${(1.6 / (0.4 + Math.abs(p))).toFixed(2)}s"/>`;
+    }
+    s += `<circle class="hub" cx="${hub.x}" cy="${hub.y}" r="22"/><g transform="translate(${hub.x - 12},${hub.y - 12})" fill="none" stroke="${cssVar('--text-2')}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON.inv}</g>`;
+    for (const k in nodes) {
+      const n = nodes[k];
+      s += `<circle class="node-bg" cx="${n.x}" cy="${n.y}" r="30" stroke="${n.c}" stroke-width="2.5"/>`;
+      s += `<g transform="translate(${n.x - 14.4},${n.y - 14.4}) scale(1.2)" fill="none" stroke="${n.c}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[n.icon]}</g>`;
+      s += `<text class="node-val" x="${n.x}" y="${n.y + 52}">${n.val}</text><text class="node-lbl" x="${n.x}" y="${n.y + 68}">${n.lbl}</text>`;
+    }
+    return s + '</svg>';
+  }
+
+  function inverterRows(raw) {
+    if (!raw) return '';
+    const v = (k) => (raw[k] && raw[k].value !== null && raw[k].value !== undefined ? raw[k] : null);
+    const rows = [
+      ['Temperatura del inversor', v('inverterTemperature'), (x) => C.fmt(+x.value, 0) + ' °C'],
+      ['Voltaje de la batería', v('batteryVoltage'), (x) => C.fmt(+x.value, 1) + ' V'],
+      ['Voltaje de la red', v('acInputVoltage'), (x) => C.fmt(+x.value, 0) + ' V'],
+      ['Voltaje de los paneles', v('pvVoltage'), (x) => C.fmt(+x.value, 0) + ' V'],
+      ['Carga del inversor', v('outputLoadPercent'), (x) => C.fmt(+x.value, 0) + ' %'],
+      ['Generado en total', v('pvGeneratedEnergyOfTotal'), (x) => C.fmt(+x.value, 1) + ' kWh'],
+    ].filter(r => r[1]);
+    if (!rows.length) return '';
+    return `<div class="section-title">Inversor</div><div class="list">${rows.map(([t, x, f]) => `<div class="row plain"><div class="main"><div class="title">${t}</div></div><div class="right">${f(x)}</div></div>`).join('')}</div>`;
+  }
+
+  async function renderAhora(alive) {
+    loading('ahora');
+    const src = SRC();
+    const [L, today] = await Promise.all([src.live(), src.day(new Date())]);
+    if (!alive()) return;
+    const T = L.today;
+    const auto = T.load > 0 ? Math.round((T.self / T.load) * 100) : 0;
+    const col = colors();
+    const acc = isCloud() ? Cloud.account() : null;
+    const sub = L.online === false ? `Último dato ${ago(L.at)}` : `Actualizado a las ${hhmm(L.at)}`;
+    $('#screen-ahora').innerHTML = `
+      ${head(acc ? esc(cap(acc.device.name || 'Mi Solar')) : 'Mi Solar', sub, L.online !== false)}
+      ${L.online === false ? `<div class="banner bad">${svgIcon('off')}<span>El inversor no manda datos desde las ${hhmm(L.at)}. Revisa el WiFi del equipo.</span></div>` : ''}
+      <div class="card flow">${flowSvg(L)}</div>
+      <div class="tiles">
+        <div class="tile"><div class="lbl"><i class="swatch" style="background:${col.solar}"></i>Generado hoy</div>
+          <div class="val">${kwh(T.gen, T.gen < 10 ? 2 : 1)}<small>kWh</small></div><div class="foot">Ahorro hoy ${clp(savingOf(T))}</div></div>
+        <div class="tile"><div class="lbl"><i class="swatch" style="background:${col.home}"></i>Consumo hoy</div>
+          <div class="val">${kwh(T.load, T.load < 10 ? 2 : 1)}<small>kWh</small></div><div class="foot">De la red ${kwh(T.imp)} kWh</div></div>
+        <div class="tile"><div class="lbl"><i class="swatch" style="background:${col.batt}"></i>Batería</div>
+          <div class="val">${Math.round(L.soc)}<small>%</small></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(0, Math.min(100, Math.round(L.soc)))}%"></div></div></div>
+        <div class="tile"><div class="lbl">Del sol</div>
+          <div class="val">${auto}<small>%</small></div><div class="foot">de lo que usaste hoy</div></div>
+      </div>
+      <div class="section-title">Hoy</div>
+      <div class="card"><div id="chart-hoy"></div>
+        <div class="legend"><span><i class="swatch" style="background:${col.solar}"></i>Generación</span><span><i class="swatch" style="background:${col.home}"></i>Consumo</span></div>
+      </div>
+      ${inverterRows(L.raw)}
+      ${!isCloud() ? '<p class="note">Estos son datos de ejemplo. Conecta tu cuenta de Solar of Things en la pestaña Avisos.</p>' : ''}`;
+    C.dayChart($('#chart-hoy'), today, col);
+  }
+
+  // ---------- HISTORIAL ----------
+  const qs = new URLSearchParams(location.search);
+  const H = { range: ['dia', 'mes', 'anio'].includes(qs.get('r')) ? qs.get('r') : 'dia', ref: new Date() };
+  function stepRef(ref, range, dir) {
+    const r = new Date(ref);
+    if (range === 'dia') r.setDate(r.getDate() + dir);
+    else if (range === 'mes') { r.setDate(1); r.setMonth(r.getMonth() + dir); }
+    else { r.setDate(1); r.setFullYear(r.getFullYear() + dir); }
+    return r;
+  }
+  function shift(dir) {
+    const r = stepRef(H.ref, H.range, dir);
+    if (r > new Date()) return;
+    H.ref = r;
+    render();
+  }
+  async function periodData(range, ref, upTo) {
+    const src = SRC();
+    if (range === 'dia') return { name: ref.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' }), totals: (await src.day(ref, upTo ? upTo.hour : null)).totals };
+    if (range === 'mes') { const m = await src.month(ref.getFullYear(), ref.getMonth(), upTo); return { name: `${MESES[ref.getMonth()]} ${ref.getFullYear()}`, totals: m.totals, items: m.items }; }
+    const y = await src.year(ref.getFullYear(), upTo); return { name: String(ref.getFullYear()), totals: y.totals, items: y.items };
+  }
+  async function renderHistorial(alive) {
+    loading('historial');
+    const col = colors();
+    const now = new Date();
+    const hour = now.getHours() + now.getMinutes() / 60;
+    // Si el periodo actual va a la mitad, comparo con el anterior hasta el mismo punto
+    const isCurrent = H.range === 'dia' ? H.ref.toDateString() === now.toDateString()
+      : H.range === 'mes' ? H.ref.getFullYear() === now.getFullYear() && H.ref.getMonth() === now.getMonth()
+      : H.ref.getFullYear() === now.getFullYear();
+    const upTo = isCurrent ? { month: now.getMonth(), day: now.getDate(), hour } : null;
+    const cur = await periodData(H.range, H.ref);
+    const prev = await periodData(H.range, stepRef(H.ref, H.range, -1), upTo);
+    const dayData = H.range === 'dia' ? await SRC().day(H.ref) : null;
+    if (!alive()) return;
+    const hasPrev = prev.totals.gen > 0.05;
+    const dPct = hasPrev ? Math.round(((cur.totals.gen - prev.totals.gen) / prev.totals.gen) * 100) : 0;
+    const prevName = { dia: 'el día anterior', mes: 'el mes anterior', anio: 'el año anterior' }[H.range];
+    const next = stepRef(H.ref, H.range, 1);
+    const dec = cur.totals.gen < 10 ? 2 : 1;
+
+    $('#screen-historial').innerHTML = `
+      ${head('Historial')}
+      <div class="seg" role="group" aria-label="Periodo">
+        <button data-r="dia" aria-pressed="${H.range === 'dia'}">Día</button>
+        <button data-r="mes" aria-pressed="${H.range === 'mes'}">Mes</button>
+        <button data-r="anio" aria-pressed="${H.range === 'anio'}">Año</button>
+      </div>
+      <div class="card">
+        <div class="period">
+          <button id="prev" aria-label="Anterior">‹</button>
+          <div class="name">${cap(cur.name)}</div>
+          <button id="next" aria-label="Siguiente" ${next > now ? 'disabled' : ''}>›</button>
+        </div>
+        <div class="summary">
+          <div><div class="k">Generado</div><div class="v">${kwh(cur.totals.gen, dec)} kWh</div>
+            ${hasPrev ? `<div class="delta ${dPct >= 0 ? 'up' : 'down'}">${dPct >= 0 ? '▲' : '▼'} ${Math.abs(dPct)} % vs ${prevName}</div>` : ''}</div>
+          <div><div class="k">Consumido</div><div class="v">${kwh(cur.totals.load, cur.totals.load < 10 ? 2 : 1)} kWh</div></div>
+          <div><div class="k">Ahorro</div><div class="v">${clp(savingOf(cur.totals))}</div></div>
+        </div>
+        <div id="chart-hist"></div>
+        <div class="legend"><span><i class="swatch" style="background:${col.solar}"></i>Generación</span><span><i class="swatch" style="background:${col.home}"></i>Consumo</span></div>
+      </div>
+      <div class="section-title">Detalle</div>
+      <div class="list">
+        <div class="row plain"><div class="main"><div class="title">Usado del sol y la batería</div></div><div class="right">${kwh(cur.totals.self, 2)} kWh</div></div>
+        <div class="row plain"><div class="main"><div class="title">Sacado de la red</div></div><div class="right">${kwh(cur.totals.imp, 2)} kWh</div></div>
+        <div class="row plain"><div class="main"><div class="title">Vendido a la red</div></div><div class="right">${kwh(cur.totals.exp, 2)} kWh</div></div>
+      </div>`;
+    document.querySelectorAll('#screen-historial .seg button').forEach(b => b.addEventListener('click', () => { H.range = b.dataset.r; H.ref = new Date(); $('#screen-historial').innerHTML = ''; render(); }));
+    $('#prev').addEventListener('click', () => shift(-1));
+    $('#next').addEventListener('click', () => shift(1));
+
+    if (H.range === 'dia') C.dayChart($('#chart-hist'), dayData, col);
+    else if (H.range === 'mes') C.barChart($('#chart-hist'), cur.items, col, { title: (it) => it.date.toLocaleDateString('es-CL', { weekday: 'short', day: 'numeric', month: 'short' }) });
+    else C.barChart($('#chart-hist'), cur.items, col, { labels: ['E', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'], title: (it) => cap(MESES[it.month]) });
+  }
+
+  // ---------- AHORRO ----------
+  async function renderAhorro(alive) {
+    loading('ahorro');
+    const now = new Date();
+    const src = SRC();
+    const tDay = (await src.day(now)).totals;
+    const tMonth = (await src.month(now.getFullYear(), now.getMonth())).totals;
+    const tYear = (await src.year(now.getFullYear())).totals;
+    if (!alive()) return;
+    const kgCO2 = tYear.gen * S.co2;
+    $('#screen-ahorro').innerHTML = `
+      ${head('Ahorro')}
+      <div class="card hero">
+        <div class="k">Te ahorraste este mes</div>
+        <div class="big">${clp(savingOf(tMonth))}</div>
+        <div class="foot">${MESES[now.getMonth()]} · ${kwh(tMonth.gen, tMonth.gen < 10 ? 2 : 0)} kWh generados</div>
+      </div>
+      <div class="section-title">Resumen</div>
+      <div class="list">
+        <div class="row plain"><div class="main"><div class="title">Hoy</div></div><div class="right">${clp(savingOf(tDay))}</div></div>
+        <div class="row plain"><div class="main"><div class="title">Este mes</div></div><div class="right">${clp(savingOf(tMonth))}</div></div>
+        <div class="row plain"><div class="main"><div class="title">En ${now.getFullYear()}</div></div><div class="right">${clp(savingOf(tYear))}</div></div>
+        <div class="row plain"><div class="main"><div class="title">Pagado por vender a la red</div><div class="desc">Incluido arriba, este año</div></div><div class="right">${clp(tYear.exp * S.inyeccion)}</div></div>
+        <div class="row plain"><div class="main"><div class="title">CO₂ evitado este año</div><div class="desc">Aproximado</div></div><div class="right">${C.fmt(kgCO2, kgCO2 < 10 ? 1 : 0)} kg</div></div>
+      </div>
+      <div class="section-title">Precios de tu boleta</div>
+      <div class="list">
+        <label class="row plain"><div class="main"><div class="title">Precio del kWh</div><div class="desc">Lo que pagas por cada kWh</div></div>$<input type="number" inputmode="decimal" min="0" id="in-tarifa" value="${S.tarifa}"></label>
+        <label class="row plain"><div class="main"><div class="title">Pago por inyección</div><div class="desc">Lo que te pagan por kWh vendido</div></div>$<input type="number" inputmode="decimal" min="0" id="in-iny" value="${S.inyeccion}"></label>
+      </div>
+      <p class="note">Ahorro = energía que no sacaste de la red × precio del kWh, más lo que vendiste × pago por inyección. Revisa los dos precios en tu boleta de luz.</p>`;
+    const bind = (id, key) => $(id).addEventListener('change', (e) => { const v = parseFloat(e.target.value); if (!isNaN(v) && v >= 0) { S[key] = v; save(); render(); } });
+    bind('#in-tarifa', 'tarifa');
+    bind('#in-iny', 'inyeccion');
+  }
+
+  // ---------- AVISOS ----------
+  async function buildAlerts() {
+    if (!isCloud()) return Demo.alerts();
+    const out = [];
+    const L = await Cloud.live();
+    if (S.aOffline && !L.online) out.push({ level: 'bad', icon: 'off', title: 'Inversor sin conexión', desc: `No manda datos desde las ${hhmm(L.at)}.`, at: L.at });
+    if (S.aBattLow && L.soc < S.battLow) out.push({ level: 'warn', icon: 'batt', title: `Batería bajo ${S.battLow} %`, desc: `Está en ${Math.round(L.soc)} %.`, at: L.at });
+    if (S.aFull && L.soc >= 99.5) out.push({ level: 'info', icon: 'batt', title: 'Batería llena', desc: 'Está al 100 %.', at: L.at });
+    if (S.aLowProd) {
+      const now = new Date();
+      const m = await Cloud.month(now.getFullYear(), now.getMonth());
+      const past = m.items.filter(it => it && it.date.toDateString() !== now.toDateString() && it.gen > 0);
+      if (past.length >= 3) {
+        const y = past[past.length - 1];
+        const avg = past.slice(0, -1).reduce((a, b) => a + b.gen, 0) / (past.length - 1);
+        if (avg > 0 && y.gen < avg * 0.7) out.push({ level: 'warn', icon: 'down', title: 'Producción baja', desc: `El ${y.date.toLocaleDateString('es-CL', { weekday: 'long' })} generó ${Math.round((1 - y.gen / avg) * 100)} % menos que el promedio.`, at: y.date });
+      }
+    }
+    return out;
+  }
+
+  async function renderAvisos(alive) {
+    loading('avisos');
+    const lvl = { bad: cssVar('--bad'), warn: cssVar('--warn'), info: cssVar('--tint') };
+    const list = await buildAlerts();
+    if (!alive()) return;
+    const acc = isCloud() ? Cloud.account() : null;
+    const sw = (key) => `<span class="switch"><input type="checkbox" data-k="${key}" ${S[key] ? 'checked' : ''}><span></span></span>`;
+    const iconFor = (a) => a.icon || ({ bad: 'off', warn: a.title.startsWith('Producción') ? 'down' : 'warn', info: 'info' }[a.level]);
+    $('#screen-avisos').innerHTML = `
+      ${head('Avisos')}
+      <div class="list">
+        ${list.length ? list.map(a => `
+          <div class="row"><div class="ico" style="background:${lvl[a.level]}">${svgIcon(iconFor(a))}</div>
+            <div class="main"><div class="title">${esc(a.title)}</div><div class="desc">${esc(a.desc)}</div></div>
+            <div class="right" style="font-size:13px">${ago(a.at)}</div></div>`).join('')
+          : `<div class="row"><div class="ico" style="background:${cssVar('--good')}">${svgIcon('ok')}</div><div class="main"><div class="title">Todo bien</div><div class="desc">No hay nada que revisar.</div></div></div>`}
+      </div>
+      <div class="section-title">Avisarme cuando</div>
+      <div class="list">
+        <div class="row"><div class="ico" style="background:${cssVar('--warn')}">${svgIcon('batt')}</div><div class="main"><div class="title">La batería baje de</div></div>
+          <input type="number" inputmode="numeric" min="5" max="95" id="in-low" value="${S.battLow}" style="width:44px">%&nbsp;${sw('aBattLow')}</div>
+        <div class="row"><div class="ico" style="background:${cssVar('--bad')}">${svgIcon('off')}</div><div class="main"><div class="title">El inversor se desconecte</div></div>${sw('aOffline')}</div>
+        <div class="row"><div class="ico" style="background:${cssVar('--warn')}">${svgIcon('down')}</div><div class="main"><div class="title">La producción sea baja</div><div class="desc">30 % menos que el promedio</div></div>${sw('aLowProd')}</div>
+        <div class="row"><div class="ico" style="background:${cssVar('--good')}">${svgIcon('batt')}</div><div class="main"><div class="title">La batería se llene</div></div>${sw('aFull')}</div>
+      </div>
+      <div class="section-title">Cuenta de Solar of Things</div>
+      ${acc ? `
+      <div class="list">
+        <div class="row"><div class="ico" style="background:${cssVar('--good')}">${svgIcon('link')}</div><div class="main"><div class="title">${esc(acc.account)}</div><div class="desc">${esc(acc.device.name || '')} · ${esc(acc.device.model || 'Inversor')}${acc.device.ratedKw ? ' · ' + acc.device.ratedKw + ' kW' : ''}</div></div></div>
+        <button class="row plain btn-row danger" id="logout">Desconectar</button>
+      </div>
+      <p class="note">Los avisos aparecen al abrir la app. Para que te lleguen con la app cerrada falta el paso 3.</p>` : `
+      <form class="list" id="login-form" autocomplete="on">
+        <label class="row plain"><div class="main"><div class="title">Usuario</div></div><input type="text" name="username" id="in-user" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="tu usuario" style="width:60%;text-align:right"></label>
+        <label class="row plain"><div class="main"><div class="title">Clave</div></div><input type="password" name="password" id="in-pass" autocomplete="current-password" placeholder="••••••" class="pass"></label>
+        <button class="row plain btn-row" type="submit" id="login-btn">Conectar</button>
+      </form>
+      <p class="note" id="login-msg">Tu usuario y clave se guardan solo en este celular y se usan únicamente para hablar con Solar of Things.</p>`}`;
+    document.querySelectorAll('#screen-avisos input[type=checkbox]').forEach(i => i.addEventListener('change', () => { S[i.dataset.k] = i.checked; save(); render(); }));
+    $('#in-low').addEventListener('change', (e) => { const v = parseInt(e.target.value, 10); if (v >= 5 && v <= 95) { S.battLow = v; save(); render(); } });
+    if (acc) {
+      $('#logout').addEventListener('click', () => { if (confirm('¿Desconectar tu cuenta de este celular?')) { Cloud.disconnect(); clearScreens(); render(); } });
+    } else {
+      $('#login-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('#login-btn'), msg = $('#login-msg');
+        btn.disabled = true; btn.textContent = 'Conectando…';
+        try {
+          await Cloud.connect($('#in-user').value, $('#in-pass').value);
+          clearScreens();
+          go('ahora');
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Conectar';
+          msg.textContent = err.message || 'No se pudo conectar.';
+          msg.style.color = cssVar('--bad');
+        }
+      });
+    }
+  }
+
+  function clearScreens() { document.querySelectorAll('.screen').forEach(s => { s.innerHTML = ''; }); }
+
+  // ---------- Arranque ----------
+  let rt, lastW = window.innerWidth;
+  window.addEventListener('resize', () => { if (window.innerWidth === lastW) return; lastW = window.innerWidth; clearTimeout(rt); rt = setTimeout(render, 150); });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+  setInterval(() => { if (tab === 'ahora' && !document.hidden) render(); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && tab === 'ahora') render(); });
+  if (['light', 'dark'].includes(qs.get('theme'))) document.documentElement.dataset.theme = qs.get('theme');
+  const start = qs.get('tab');
+  go(['ahora', 'historial', 'ahorro', 'avisos'].includes(start) ? start : 'ahora');
+
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
