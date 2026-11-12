@@ -71,10 +71,10 @@
   }
   document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => go(b.dataset.tab)));
 
-  const titleOf = (t) => ({ ahora: 'Mi Solar', historial: 'Historial', ahorro: 'Ahorro', avisos: 'Avisos' }[t]);
+  const titleOf = (t) => ({ ahora: 'Mi Solar', historial: 'Historial', ahorro: 'Ahorro', equipo: 'Equipo', avisos: 'Avisos' }[t]);
   async function render() {
     const id = ++renderId;
-    const fn = { ahora: renderAhora, historial: renderHistorial, ahorro: renderAhorro, avisos: renderAvisos }[tab];
+    const fn = { ahora: renderAhora, historial: renderHistorial, ahorro: renderAhorro, equipo: renderEquipo, avisos: renderAvisos }[tab];
     try { await fn(() => id === renderId); }
     catch (e) {
       if (id !== renderId) return;
@@ -358,11 +358,123 @@
     bind('#in-iny', 'inyeccion');
   }
 
+  // ---------- EQUIPO (todos los datos del inversor) ----------
+  const ES = {  // traducciones de las opciones que manda el inversor
+    'Battery Mode': 'Usando la batería', 'Shutdown Mode': 'Apagado', 'Failure Mode': 'En falla', 'Mains Mode': 'Usando la red',
+    'Initial Power On Mode': 'Encendiendo', 'Standby Mode': 'En espera', 'Test Mode': 'Prueba', Static: 'En reposo', Discharge: 'Descargando',
+    Charge: 'Cargando', Close: 'Apagado', Open: 'Encendido', Off: 'Apagado', On: 'Encendido', Light: 'Encendida', Flicker: 'Parpadeando',
+    'Off Grid': 'Sin inyectar a la red', 'Waiting For Grid Connection': 'Esperando para inyectar', 'Connecting To The Grid': 'Inyectando a la red',
+    CSO: 'Solar primero (CSO)', SNU: 'Solar y red (SNU)', OSO: 'Solo solar (OSO)', SUB: 'Solar → red → batería (SUB)', SBU: 'Solar → batería → red (SBU)',
+    BLU: 'Batería → casa → red (BLU)', LBU: 'Casa → batería → red (LBU)', AGM: 'Plomo AGM', FLD: 'Plomo inundada', USE: 'Personalizada (USE)',
+    LIA: 'Litio (LIA)', LIB: 'Litio (LIB)', LIC: 'Litio (LIC)', PYL: 'Litio Pylontech', TQF: 'Litio TQF', GRO: 'Litio Growatt', SIG: 'Una fase',
+  };
+  const FLAGS = [  // [dato, qué revisa, valor que indica problema]
+    ['batteryNotConnected', 'Batería conectada', '1'], ['lowBatteryAlarm', 'Batería no está baja', '1'], ['batteryVoltageHigher', 'Voltaje de batería normal', '1'],
+    ['inputVoltageTooHigh', 'Voltaje de entrada normal', '1'], ['abnormalLowPVPower', 'Potencia de paneles normal', '1'], ['overLoaderd', 'Sin sobrecarga', '1'],
+    ['machineOverTemperature', 'Sin sobrecalentamiento', '1'], ['abnormalFanSpeed', 'Ventiladores funcionando', '1'], ['abnormalTemperatureSensor', 'Sensores de temperatura', '1'],
+    ['eepromDataAbnormality', 'Memoria interna', '1'], ['eepromReadWriteException', 'Lectura de memoria', '1'],
+  ];
+  const METRICS = {
+    paneles: { name: 'Paneles', unit: 'kW', dec: 2, keys: [['pvPower', 'Panel 1'], ['pv2Power', 'Panel 2']] },
+    vpaneles: { name: 'Voltaje paneles', unit: 'V', dec: 0, keys: [['pvVoltage', 'Panel 1'], ['pv2Voltage', 'Panel 2']] },
+    bateria: { name: 'Batería', unit: 'V', dec: 1, keys: [['batteryVoltage', 'Voltaje']] },
+    temp: { name: 'Temperaturas', unit: '°C', dec: 0, keys: [['inverterTemperature', 'Inversor'], ['transformerTemperature', 'Transformador'], ['pvTemperature', 'Paneles (MPPT)']] },
+    red: { name: 'Red y casa', unit: 'V', dec: 0, keys: [['acInputVoltage', 'Red'], ['outputVoltage', 'Casa']] },
+  };
+  const EQ = { metric: 'paneles', ref: new Date() };
+
+  async function renderEquipo(alive) {
+    loading('equipo');
+    if (!isCloud()) {
+      $('#screen-equipo').innerHTML = `${head('Equipo')}<div class="card empty">Aquí verás todos los datos de tu inversor: cada panel, la batería, temperaturas, ventiladores, configuración y fallas.<br><br>Conecta tu cuenta en la pestaña <b>Avisos</b>.</div>`;
+      return;
+    }
+    const [s, groups, alarmList] = await Promise.all([Cloud.latest(), Cloud.attributeGroups().catch(() => []), Cloud.alarms().catch(() => [])]);
+    if (!alive()) return;
+    const f = (s && s.fields) || {};
+    const meta = {}; groups.forEach(g => g.attrs.forEach(a => { meta[a.key] = a; }));
+    const raw = (k) => (f[k] && f[k].value !== null && f[k].value !== undefined && f[k].value !== '' ? f[k].value : null);
+    const show = (k, dec) => {
+      const v = raw(k); if (v === null) return null;
+      const m = meta[k] || {}; const opt = m.options && m.options[String(v)];
+      if (opt) return ES[opt] || opt;
+      const u = (f[k] && f[k].unit) || m.unit || '';
+      return (isNaN(+v) ? v : C.fmt(+v, dec != null ? dec : (Math.abs(+v) < 10 && +v % 1 ? 1 : 0))) + (u ? ' ' + u : '');
+    };
+    const section = (title, rows) => {
+      const r = rows.map(([label, k, dec]) => [label, typeof k === 'function' ? k() : show(k, dec)]).filter(x => x[1] !== null && x[1] !== undefined);
+      return r.length ? `<div class="section-title">${title}</div><div class="list">${r.map(([l, v]) => `<div class="row plain"><div class="main"><div class="title">${l}</div></div><div class="right">${esc(v)}</div></div>`).join('')}</div>` : '';
+    };
+    const kwW = (k) => () => (raw(k) === null ? null : kw(+raw(k)));
+    const battA = () => { const c = +(raw('batteryChargingCurrent') || 0), d = +(raw('batteryDischargeCurrent') || 0); return c > 0 ? `Cargando ${C.fmt(c, 1)} A` : d > 0 ? `Descargando ${C.fmt(d, 1)} A` : '0 A'; };
+    const cells = raw('batteryNumberInSeries');
+    const bad = FLAGS.filter(([k, , b]) => raw(k) !== null && String(raw(k)) === b);
+    const checked = FLAGS.filter(([k]) => raw(k) !== null);
+    const at = s && s.time ? new Date(s.time) : null;
+
+    // Todos los datos, por grupo (nombres originales en inglés)
+    const allGroups = groups.map(g => {
+      const rows = g.attrs.filter(a => a.read && !a.event && raw(a.key) !== null).map(a => [a.name, show(a.key)]);
+      return rows.length ? `<details class="list det"><summary class="row plain"><div class="main"><div class="title">${esc(g.key === 'battery_status' ? 'Batería' : g.key === 'bms_status' ? 'BMS (sistema de la batería)' : g.key === 'grid_status' ? 'Red' : g.key === 'load_status' ? 'Salida a la casa' : g.key === 'pv_panel_status' ? 'Paneles' : 'Otros datos')}</div></div><div class="right">${rows.length}</div></summary>${rows.map(([l, v]) => `<div class="row plain"><div class="main"><div class="title small">${esc(l)}</div></div><div class="right">${esc(v)}</div></div>`).join('')}</details>` : '';
+    }).join('');
+
+    const M = METRICS[EQ.metric];
+    $('#screen-equipo').innerHTML = `
+      ${head('Equipo', at ? `Datos de las ${hhmm(at)}` : '')}
+      <div class="card status-card">
+        <div class="ask-head"><div class="ask-ico" style="background:${bad.length ? cssVar('--bad') : cssVar('--good')}">${svgIcon(bad.length ? 'warn' : 'ok')}</div>
+        <div><div class="title">${bad.length ? `${bad.length} problema${bad.length > 1 ? 's' : ''} detectado${bad.length > 1 ? 's' : ''}` : 'El inversor está funcionando bien'}</div>
+        <div class="desc">${show('mode') || ''}${raw('statusCode') !== null ? ` · código ${esc(raw('statusCode'))}` : ''} · ${checked.length} chequeos</div></div></div>
+        ${bad.length ? `<div class="flags">${bad.map(([, l]) => `<div class="flag bad">✕ ${l.replace('normal', 'ANORMAL')}</div>`).join('')}</div>` : ''}
+      </div>
+      ${alarmList.length ? `<div class="section-title">Alarmas registradas</div><div class="list">${alarmList.slice(0, 10).map(a => {
+        const t = a.eventAttributeNameDisplay || a.alarmName || a.eventName || a.name || a.attributeName || 'Alarma';
+        const d = a.createdAt || a.alarmAt || a.time || a.occurredAt;
+        return `<div class="row"><div class="ico" style="background:${cssVar('--bad')}">${svgIcon('warn')}</div><div class="main"><div class="title">${esc(t)}</div><div class="desc">${d ? esc(new Date(d).toLocaleString('es-CL')) : ''}</div></div></div>`;
+      }).join('')}</div>` : ''}
+
+      <div class="section-title">Gráficos del día</div>
+      <div class="card">
+        <div class="chips">${Object.entries(METRICS).map(([k, m]) => `<button data-m="${k}" aria-pressed="${k === EQ.metric}">${m.name}</button>`).join('')}</div>
+        <div class="period"><button id="eq-prev" aria-label="Día anterior">‹</button><div class="name">${cap(EQ.ref.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' }))}</div><button id="eq-next" aria-label="Día siguiente" ${stepRef(EQ.ref, 'dia', 1) > new Date() ? 'disabled' : ''}>›</button></div>
+        <div id="chart-eq"><div class="empty">Cargando…</div></div>
+        <div class="legend">${M.keys.map(([, n], i) => `<span><i class="swatch" style="background:${seriesColor(i)}"></i>${n}</span>`).join('')}</div>
+      </div>
+
+      ${section('Paneles solares', [['Producción total ahora', kwW('generationPower')], ['Panel 1 · potencia', kwW('pvPower')], ['Panel 1 · voltaje', 'pvVoltage', 0], ['Panel 1 · corriente', 'pvCurrent', 1],
+        ['Panel 2 · potencia', kwW('pv2Power')], ['Panel 2 · voltaje', 'pv2Voltage', 0], ['Panel 2 · corriente', 'pv2Current', 1], ['Carga desde los paneles', 'pvChargingMark'],
+        ['Generado hoy', 'tqfDailyElectricityGeneration', 2], ['Generado este mes', 'tqfMonthlyElectricityGeneration', 1], ['Generado este año', 'tqfYearlyElectricityGeneration', 1], ['Generado en total', 'tqfTotalElectricityGeneration', 1]])}
+      ${section('Batería', [['Carga', 'batteryCapacity', 0], ['Estado', 'batteryStatus'], ['Corriente', battA], ['Voltaje', 'batteryVoltage', 1],
+        ['Tipo de batería', 'batteryType'], ['Batería de', () => (cells ? `${cells * 12} V (${cells} en serie)` : null)], ['Voltaje de carga (absorción)', 'strongChargingVoltage', 1], ['Voltaje de flotación', 'floatChargingVoltage', 1],
+        ['Corta por batería baja a', 'lowElectricLockVoltage', 1], ['Vuelve a la batería sobre', 'returnToBatteryModeVoltage', 1], ['Pasa a la red bajo', 'returnToMainsModeVoltage', 1],
+        ['Corriente máx. de carga', 'maximumTotalChargingCurrent', 0], ['Corriente máx. de carga desde la red', 'maxUtilityChargeCurrent', 0], ['Comunicación con BMS', () => (raw('bmsCommunicationNormal') === null ? null : +raw('bmsCommunicationStatus') || +raw('bmsCommunicationNormal') ? 'Conectado' : 'Sin BMS')]])}
+      ${section('Red eléctrica', [['Potencia', kwW('mainsPower')], ['Voltaje', 'acInputVoltage', 0], ['Frecuencia', 'mainsFrequency', 1], ['Inyección a la red', 'gridConnectionSign']])}
+      ${section('Salida a la casa', [['Potencia', kwW('outputActivePower')], ['Potencia aparente', 'outputApparentPower', 0], ['Voltaje', 'outputVoltage', 0], ['Frecuencia', 'outputFrequency', 1], ['Uso del inversor', 'outputLoadPercent', 0]])}
+      ${section('Inversor', [['Modo de trabajo', 'mode'], ['Prioridad de carga', 'chargingPriorityOrder'], ['Prioridad de los paneles', 'pvEnergyFeedingPriority'], ['Modo ECO', 'eco'],
+        ['Temp. inversor', 'inverterTemperature', 0], ['Temp. transformador', 'transformerTemperature', 0], ['Temp. rectificador', 'dcRectificationTemperature', 0], ['Temp. elevador (boost)', 'boostTemperature', 0],
+        ['Temp. paneles 1 / 2 (MPPT)', () => (raw('pvTemperature') === null ? null : `${raw('pvTemperature')} / ${raw('pv2Temperature') ?? '–'} °C`)], ['Ventiladores', () => (raw('fan1Speed') === null ? null : `${raw('fan1Speed')} % / ${raw('fan2Speed') ?? '–'} %`)],
+        ['Voltaje interno (bus)', 'busVoltage', 0], ['Modelo', 'deviceType'], ['Versión de software', 'softwareVersion']])}
+      ${checked.length ? `<div class="section-title">Chequeos</div><div class="list">${checked.map(([k, l, b]) => { const ok = String(raw(k)) !== b; return `<div class="row plain"><div class="main"><div class="title">${l}</div></div><div class="right" style="color:${ok ? cssVar('--good') : cssVar('--bad')}">${ok ? '✓ Bien' : '✕ Revisar'}</div></div>`; }).join('')}</div>` : ''}
+      ${allGroups ? `<div class="section-title">Todos los datos (${Object.keys(f).length})</div>${allGroups}` : ''}
+      <p class="note">Los nombres de «Todos los datos» vienen en inglés desde el inversor.</p>`;
+
+    document.querySelectorAll('#screen-equipo .chips button').forEach(b => b.addEventListener('click', () => { EQ.metric = b.dataset.m; render(); }));
+    $('#eq-prev').addEventListener('click', () => { EQ.ref = stepRef(EQ.ref, 'dia', -1); render(); });
+    $('#eq-next').addEventListener('click', () => { const r = stepRef(EQ.ref, 'dia', 1); if (r <= new Date()) { EQ.ref = r; render(); } });
+    const data = await Cloud.daySeries(EQ.ref, M.keys.map(k => k[0]));
+    if (!alive()) return;
+    C.seriesChart($('#chart-eq'), data.t, M.keys.map(([k, n], i) => ({ name: n, color: seriesColor(i), values: data.values[k] })), colors(), { unit: M.unit, dec: M.dec, zero: M.unit === 'kW' });
+  }
+  const seriesColor = (i) => [cssVar('--solar'), cssVar('--home'), cssVar('--batt')][i] || cssVar('--grid');
+
   // ---------- AVISOS ----------
   async function buildAlerts() {
     if (!isCloud()) return Demo.alerts();
     const out = [];
     const L = await Cloud.live();
+    if (S.aOffline && L.raw) {
+      FLAGS.forEach(([k, l, b]) => { const v = L.raw[k] && L.raw[k].value; if (v !== null && v !== undefined && String(v) === b) out.push({ level: 'bad', icon: 'warn', title: 'Falla del inversor', desc: l.replace('normal', 'anormal') + ': revisar.', at: L.at }); });
+    }
     if (S.aOffline && !L.online) out.push({ level: 'bad', icon: 'off', title: 'Inversor sin conexión', desc: `No manda datos desde las ${hhmm(L.at)}.`, at: L.at });
     if (S.aBattLow && L.soc < S.battLow) out.push({ level: 'warn', icon: 'batt', title: `Batería bajo ${S.battLow} %`, desc: `Está en ${Math.round(L.soc)} %.`, at: L.at });
     if (S.aFull && L.soc >= 99.5) out.push({ level: 'info', icon: 'batt', title: 'Batería llena', desc: 'Está al 100 %.', at: L.at });
@@ -400,7 +512,7 @@
       <div class="list">
         <div class="row"><div class="ico" style="background:${cssVar('--warn')}">${svgIcon('batt')}</div><div class="main"><div class="title">La batería baje de</div></div>
           <input type="number" inputmode="numeric" min="5" max="95" id="in-low" value="${S.battLow}" style="width:44px">%&nbsp;${sw('aBattLow')}</div>
-        <div class="row"><div class="ico" style="background:${cssVar('--bad')}">${svgIcon('off')}</div><div class="main"><div class="title">El inversor se desconecte</div></div>${sw('aOffline')}</div>
+        <div class="row"><div class="ico" style="background:${cssVar('--bad')}">${svgIcon('off')}</div><div class="main"><div class="title">El inversor se desconecte o falle</div></div>${sw('aOffline')}</div>
         <div class="row"><div class="ico" style="background:${cssVar('--warn')}">${svgIcon('down')}</div><div class="main"><div class="title">La producción sea baja</div><div class="desc">30 % menos que el promedio</div></div>${sw('aLowProd')}</div>
         <div class="row"><div class="ico" style="background:${cssVar('--good')}">${svgIcon('batt')}</div><div class="main"><div class="title">La batería se llene</div></div>${sw('aFull')}</div>
       </div>
@@ -449,7 +561,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden && tab === 'ahora') render(); });
   if (['light', 'dark'].includes(qs.get('theme'))) document.documentElement.dataset.theme = qs.get('theme');
   const start = qs.get('tab');
-  go(['ahora', 'historial', 'ahorro', 'avisos'].includes(start) ? start : 'ahora');
+  go(['ahora', 'historial', 'ahorro', 'equipo', 'avisos'].includes(start) ? start : 'ahora');
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

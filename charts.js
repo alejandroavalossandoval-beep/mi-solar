@@ -153,5 +153,57 @@
     hit.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') setTimeout(leave, 1600); });
   }
 
-  window.Charts = { dayChart, barChart, fmt, hideTip };
+  /* Curvas de cualquier dato a lo largo del día. series: [{ name, color, values }] */
+  function seriesChart(container, t, series, colors, opts = {}) {
+    const { svg, W, H, pad } = frame(container, 190);
+    const all = series.flatMap(s => s.values).filter(v => isFinite(v));
+    if (!t.length || !all.length) { container.innerHTML = '<div class="empty">Sin datos para este día.</div>'; return; }
+    let lo = Math.min(...all), hi = Math.max(...all);
+    if (opts.zero !== false && lo >= 0 && lo < hi * 0.5) lo = 0;          // potencias: desde 0
+    if (hi - lo < 1e-6) { hi += 1; lo = Math.max(0, lo - 1); }
+    const span = niceMax((hi - lo) * 1.1);
+    const step = span / 4;
+    lo = Math.floor(lo / step) * step; hi = lo + span;
+    if (hi < Math.max(...all)) hi += step;
+    const X = (h) => pad.l + ((W - pad.l - pad.r) * h) / 24;
+    const Y = (v) => H - pad.b - ((H - pad.t - pad.b) * (v - lo)) / (hi - lo);
+    const N = Math.round((hi - lo) / step);
+    for (let i = 0; i <= N; i++) {
+      const v = lo + step * i, y = Y(v);
+      el('line', { class: 'gridline', x1: pad.l, x2: W - pad.r, y1: y, y2: y }, svg);
+      const tx = el('text', { class: 'axis', x: pad.l - 6, y: y + 4, 'text-anchor': 'end' }, svg);
+      tx.textContent = fmt(v, step < 1 ? 1 : 0);
+    }
+    const u = el('text', { class: 'axis', x: 2, y: 11 }, svg); u.textContent = opts.unit || '';
+    for (const h of [0, 6, 12, 18, 24]) {
+      const tx = el('text', { class: 'axis', x: X(h), y: H - 4, 'text-anchor': h === 0 ? 'start' : h === 24 ? 'end' : 'middle' }, svg);
+      tx.textContent = String(h).padStart(2, '0') + ':00';
+    }
+    for (const s of series) {
+      const d = s.values.map((v, i) => `${i ? 'L' : 'M'}${X(t[i]).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+      el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+    }
+    const cross = el('line', { class: 'cross', y1: pad.t, y2: H - pad.b, visibility: 'hidden' }, svg);
+    const dots = series.map(s => el('circle', { r: 4.5, fill: s.color, stroke: colors.surface, 'stroke-width': 2, visibility: 'hidden' }, svg));
+    const hit = el('rect', { x: pad.l, y: 0, width: W - pad.l - pad.r, height: H, fill: 'transparent' }, svg);
+    const move = (ev) => {
+      const r = svg.getBoundingClientRect();
+      const h = Math.max(0, Math.min(24, ((((ev.clientX - r.left) / r.width) * W - pad.l) / (W - pad.l - pad.r)) * 24));
+      let i = 0; for (let k = 0; k < t.length; k++) if (Math.abs(t[k] - h) < Math.abs(t[i] - h)) i = k;
+      const x = X(t[i]);
+      cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+      dots.forEach((dt, k) => { dt.setAttribute('cx', x); dt.setAttribute('cy', Y(series[k].values[i])); dt.setAttribute('visibility', 'visible'); });
+      const hh = Math.floor(t[i]), mm = Math.round((t[i] - hh) * 60) % 60;
+      showTip(r.left + (x / W) * r.width, r.top + (Math.min(...series.map(s => Y(s.values[i]))) / H) * r.height,
+        `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`,
+        series.map(s => ({ name: s.name, color: s.color, value: fmt(s.values[i], opts.dec != null ? opts.dec : 1) + ' ' + (opts.unit || '') })));
+    };
+    const leave = () => { cross.setAttribute('visibility', 'hidden'); dots.forEach(d => d.setAttribute('visibility', 'hidden')); hideTip(); };
+    hit.addEventListener('pointermove', move);
+    hit.addEventListener('pointerdown', move);
+    hit.addEventListener('pointerleave', leave);
+    hit.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') setTimeout(leave, 1600); });
+  }
+
+  window.Charts = { dayChart, barChart, seriesChart, fmt, hideTip };
 })();

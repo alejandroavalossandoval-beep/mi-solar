@@ -265,5 +265,46 @@
     return { at, ...v, today, online: Date.now() - at.getTime() < 15 * 60e3, raw: f };
   }
 
-  root.SolarCloud = { md5, connect, disconnect, connected, account: () => acc, live, day, month, year, sumTotals, clearCache, CloudError };
+  // Lista de todos los datos que entrega el inversor (nombres, unidades y opciones). Cambia poco: se guarda 1 día.
+  async function attributeGroups() {
+    const K = 'miSolar.atributos';
+    try { const c = JSON.parse(root.localStorage.getItem(K) || 'null'); if (c && c.dev === acc.device.id && Date.now() - c.at < 864e5) return c.groups; } catch (e) { /* nada */ }
+    const d = await get('/device/query/attribute/group?deviceId=' + acc.device.id);
+    const groups = (d.attributesGroups || []).map(g => ({
+      key: g.key, name: (g.nameI18n && g.nameI18n.en) || g.key,
+      attrs: (g.attributes || []).map(a => ({
+        key: a.key, name: a.nameDisplay || a.name || a.key, unit: a.unit || '', read: /Read/.test(a.operationModeDict || ''), event: !!a.isEventAttribute,
+        options: (a.enumValueDisplays || []).reduce((o, e) => { o[e.value] = e.localeText || e.text; return o; }, {}),
+      })),
+    }));
+    try { root.localStorage.setItem(K, JSON.stringify({ dev: acc.device.id, at: Date.now(), groups })); } catch (e) { /* nada */ }
+    return groups;
+  }
+
+  // Curvas del día para cualquier dato (ej.: pvPower, pv2Power, inverterTemperature)
+  async function daySeries(date, keys) {
+    const from = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+    const to = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+    return memo('serie-' + ymd(date) + keys.join(','), sameDay(date, new Date()) ? 60e3 : 36e5, async () => {
+      const t = [], out = {}; keys.forEach(k => { out[k] = []; });
+      for (let page = 1; page <= 5; page++) {
+        const d = await post('/deviceState/simple/attribute/keys/history/v1', { deviceId: acc.device.id, count: 500, page, fromTime: isoLocal(from), toTime: isoLocal(to), orderByTimeAsc: true, keys });
+        const p = (d && d.payload) || {}; const ts = p.timeSeries || [], f = p.fields || {};
+        ts.forEach((x, i) => { const at = new Date(x); t.push(at.getHours() + at.getMinutes() / 60 + at.getSeconds() / 3600); keys.forEach(k => out[k].push(f[k] ? num(f[k][i]) : 0)); });
+        if (ts.length < 500) break;
+      }
+      for (const k of keys) {   // quitar lecturas sueltas imposibles
+        const a = out[k];
+        for (let i = 1; i < a.length - 1; i++) { const n = Math.max(a[i - 1], a[i + 1]); if (a[i] > 1 && a[i] > 4 * n) a[i] = (a[i - 1] + a[i + 1]) / 2; }
+      }
+      return { t, values: out };
+    });
+  }
+
+  // Alarmas registradas por Solar of Things
+  async function alarms() {
+    return memo('alarmas', 60e3, async () => { const d = await post('/alarm/query/list', { page: 1, count: 20 }); return (d && d.list) || []; });
+  }
+
+  root.SolarCloud = { attributeGroups, alarms, daySeries, latest: () => latest(), md5, connect, disconnect, connected, account: () => acc, live, day, month, year, sumTotals, clearCache, CloudError };
 })(typeof window !== 'undefined' ? window : globalThis);
