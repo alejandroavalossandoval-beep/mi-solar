@@ -205,7 +205,7 @@
     const raw = L.raw || {};
     const rv = (k, u) => (raw[k] && raw[k].value != null ? `${raw[k].value} ${u}` : null);
     const inv = [['Temp. inversor', rv('inverterTemperature', '°C')], ['Voltaje batería', rv('batteryVoltage', 'V')], ['Voltaje red', rv('acInputVoltage', 'V')],
-      ['Voltaje paneles', rv('pvVoltage', 'V')], ['Corriente paneles', rv('pvCurrent', 'A')], ['Carga inversor', rv('outputLoadPercent', '%')], ['Modo', raw.mode ? raw.mode.value : null]].filter(x => x[1]);
+      ['Panel 1', raw.pvPower ? `${kw(+raw.pvPower.value)}, ${raw.pvVoltage && raw.pvVoltage.value} V, ${raw.pvCurrent && raw.pvCurrent.value} A` : null], ['Panel 2', raw.pv2Power ? `${kw(+raw.pv2Power.value)}, ${raw.pv2Voltage && raw.pv2Voltage.value} V, ${raw.pv2Current && raw.pv2Current.value} A` : null], ['Temp. transformador', rv('transformerTemperature', '°C')], ['Voltaje flotación batería', rv('floatChargingVoltage', 'V')], ['Carga inversor', rv('outputLoadPercent', '%')], ['Modo', raw.mode ? raw.mode.value : null]].filter(x => x[1]);
     if (inv.length) lines.push('', 'INVERSOR: ' + inv.map(([a, b]) => `${a} ${b}`).join(' · '));
     const al = await buildAlerts();
     if (al.length) lines.push('', 'AVISOS: ' + al.map(a => `${a.title} (${a.desc})`).join(' | '));
